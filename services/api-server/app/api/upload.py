@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
 from app.services.auth import ALL_ROLES, require_roles
 from app.services.doc_registry import DocRegistry, build_doc_registry_from_env
@@ -53,6 +53,7 @@ def upload_pdf_bytes(
     storage: ObjectStorage,
     registry: DocRegistry,
     task_queue: TaskQueue | None = None,
+    runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     doc_id = f"doc_{uuid.uuid4().hex[:12]}"
     version_id = f"ver_{uuid.uuid4().hex[:12]}"
@@ -72,6 +73,8 @@ def upload_pdf_bytes(
     )
 
     queue_payload = {"doc_id": doc_id, "version_id": version_id, "object_key": object_key}
+    if runtime_config:
+        queue_payload["runtime_config"] = runtime_config
     if task_queue is not None:
         task_queue.enqueue_document_process(queue_payload)
 
@@ -104,17 +107,36 @@ def list_docs(limit: int | None = None) -> dict[str, Any]:
 
 
 @router.post("/upload", status_code=202)
-async def upload(file: UploadFile) -> dict[str, Any]:
+async def upload(
+    file: UploadFile,
+    mineru_api_base: str | None = Form(default=None),
+    mineru_api_key: str | None = Form(default=None),
+    llm_provider: str | None = Form(default=None),
+    llm_api_key: str | None = Form(default=None),
+    llm_model: str | None = Form(default=None),
+    llm_base_url: str | None = Form(default=None),
+) -> dict[str, Any]:
     content = await file.read()
     validate_upload_payload(
         filename=file.filename or "",
         content_type=file.content_type,
         content=content,
     )
+    runtime_config = {
+        "mineru_api_base": (mineru_api_base or "").strip(),
+        "mineru_api_key": (mineru_api_key or "").strip(),
+        "llm_provider": (llm_provider or "").strip().lower(),
+        "llm_api_key": (llm_api_key or "").strip(),
+        "llm_model": (llm_model or "").strip(),
+        "llm_base_url": (llm_base_url or "").strip(),
+    }
+    runtime_config = {k: v for k, v in runtime_config.items() if v}
+
     return upload_pdf_bytes(
         filename=file.filename or "unknown.pdf",
         content=content,
         storage=DEFAULT_STORAGE,
         registry=DEFAULT_REGISTRY,
         task_queue=DEFAULT_TASK_QUEUE,
+        runtime_config=runtime_config,
     )

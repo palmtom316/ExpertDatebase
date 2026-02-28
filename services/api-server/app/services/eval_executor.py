@@ -33,7 +33,12 @@ def _result_output_dir(run_id: str) -> Path:
     return path
 
 
-def execute_eval_run(repo: EvalRepo, run_id: str, dataset_version: str) -> dict[str, Any]:
+def execute_eval_run(
+    repo: EvalRepo,
+    run_id: str,
+    dataset_version: str,
+    runtime_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     rows = load_dataset_rows(dataset_version)
     output_dir = _result_output_dir(run_id)
     storage = build_storage_from_env()
@@ -48,7 +53,11 @@ def execute_eval_run(repo: EvalRepo, run_id: str, dataset_version: str) -> dict[
         question = str((row.get("input") or {}).get("question") or "")
         truth_answer = str((row.get("truth") or {}).get("answer") or "")
 
-        llm = router.route_and_generate(task_type="qa_generate", prompt=question)
+        llm = router.route_and_generate(
+            task_type="qa_generate",
+            prompt=question,
+            runtime_config=runtime_config,
+        )
         pred_text = llm.get("text", "")
 
         score_total, breakdown = _score_qa(pred_text, truth_answer)

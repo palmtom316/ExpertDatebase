@@ -38,11 +38,20 @@ class TestUploadQueueAndFactories(unittest.TestCase):
                 storage=storage,
                 registry=registry,
                 task_queue=queue,
+                runtime_config={
+                    "mineru_api_base": "https://mineru.example.com",
+                    "mineru_api_key": "mineru-key",
+                    "llm_provider": "openai",
+                    "llm_api_key": "llm-key",
+                    "llm_model": "gpt-4o-mini",
+                },
             )
 
             self.assertEqual(len(queue.jobs), 1)
             self.assertEqual(queue.jobs[0]["doc_id"], result["doc_id"])
             self.assertEqual(queue.jobs[0]["version_id"], result["version_id"])
+            self.assertEqual(queue.jobs[0]["runtime_config"]["mineru_api_base"], "https://mineru.example.com")
+            self.assertEqual(queue.jobs[0]["runtime_config"]["llm_provider"], "openai")
 
     def test_storage_factory_builds_minio(self) -> None:
         old = dict(os.environ)

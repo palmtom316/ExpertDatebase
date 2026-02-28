@@ -65,11 +65,39 @@ def add_dataset_sample(payload: dict) -> dict:
 def start_eval_run(payload: dict | None = None) -> dict:
     req = payload or {}
     dataset_version = str(req.get("dataset_version") or "v1.0")
+    runtime_config = {
+        "llm_provider": str(req.get("llm_provider") or "").strip().lower(),
+        "llm_api_key": str(req.get("llm_api_key") or "").strip(),
+        "llm_model": str(req.get("llm_model") or "").strip(),
+        "llm_base_url": str(req.get("llm_base_url") or "").strip(),
+    }
+    runtime_config = {k: v for k, v in runtime_config.items() if v}
     run = EVAL_REPO.create_run(dataset_version=dataset_version, status="running")
-    summary = execute_eval_run(repo=EVAL_REPO, run_id=run["id"], dataset_version=dataset_version)
+    summary = execute_eval_run(
+        repo=EVAL_REPO,
+        run_id=run["id"],
+        dataset_version=dataset_version,
+        runtime_config=runtime_config,
+    )
     return {"run": run, "summary": summary}
 
 
 @router.get("/trends")
 def eval_trends() -> dict:
     return {"item": EVAL_REPO.build_trends()}
+
+
+@router.get("/llm-quality")
+def llm_quality() -> dict:
+    items = EVAL_REPO.list_results()
+    scores = [float(x.get("score_total", 0.0)) for x in items]
+    avg = (sum(scores) / len(scores)) if scores else 0.0
+    grade = "A" if avg >= 85 else ("B" if avg >= 65 else "C")
+    return {
+        "item": {
+            "overall_score": avg,
+            "grade": grade,
+            "result_count": len(scores),
+            "recent_results": items[:20],
+        }
+    }

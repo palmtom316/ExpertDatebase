@@ -37,12 +37,13 @@ def chat_with_citations(
     question: str,
     repo: SearchRepo,
     entity_index: Any,
+    runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     search_res = hybrid_search(question=question, repo=repo, entity_index=entity_index, top_k=5)
     citations = search_res["citations"]
 
     router = LLMRouter()
-    llm_res = router.route_and_generate(task_type="qa_generate", prompt=question)
+    llm_res = router.route_and_generate(task_type="qa_generate", prompt=question, runtime_config=runtime_config)
 
     if not citations:
         answer = "未检索到可用证据，无法给出有引用支撑的回答。"

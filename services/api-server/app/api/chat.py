@@ -27,4 +27,16 @@ class _EmptyEntityIndex:
 @router.post("/chat")
 def chat(payload: dict) -> dict:
     question = str(payload.get("question", "")).strip()
-    return chat_with_citations(question=question, repo=REPO, entity_index=_EmptyEntityIndex())
+    runtime_config = {
+        "llm_provider": str(payload.get("llm_provider") or "").strip().lower(),
+        "llm_api_key": str(payload.get("llm_api_key") or "").strip(),
+        "llm_model": str(payload.get("llm_model") or "").strip(),
+        "llm_base_url": str(payload.get("llm_base_url") or "").strip(),
+    }
+    runtime_config = {k: v for k, v in runtime_config.items() if v}
+    return chat_with_citations(
+        question=question,
+        repo=REPO,
+        entity_index=_EmptyEntityIndex(),
+        runtime_config=runtime_config,
+    )

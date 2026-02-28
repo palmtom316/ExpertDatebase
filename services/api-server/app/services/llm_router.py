@@ -57,8 +57,9 @@ class LLMRouter:
         masked = re.sub(r"\b\d{17}[\dXx]\b", "[IDCARD]", masked)
         return masked
 
-    def _providers_for_task(self, task_type: str) -> tuple[list[str], dict[str, Any]]:
-        configured = os.getenv("LLM_PROVIDER", "auto").strip().lower()
+    def _providers_for_task(self, task_type: str, runtime_config: dict[str, Any] | None = None) -> tuple[list[str], dict[str, Any]]:
+        runtime = runtime_config or {}
+        configured = str(runtime.get("llm_provider") or os.getenv("LLM_PROVIDER", "auto")).strip().lower()
         tier_map = self.cfg.get("tiers", {})
         tiers = self.cfg.get("tasks", {}).get(task_type, ["tier1", "tier2", "tier3"])
 
@@ -101,13 +102,14 @@ class LLMRouter:
             "usage": {"tokens_in": len(prompt), "tokens_out": len(response_text)},
         }
 
-    def _call_openai(self, task_type: str, prompt: str) -> dict[str, Any]:
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    def _call_openai(self, task_type: str, prompt: str, runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
+        runtime = runtime_config or {}
+        api_key = str(runtime.get("llm_api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is required when provider=openai")
 
-        base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        base_url = str(runtime.get("llm_base_url") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+        model = str(runtime.get("llm_model") or os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
         system_prompt = os.getenv(
             "LLM_SYSTEM_PROMPT",
             "You are a factual assistant. Use citations and avoid unsupported claims.",
@@ -144,13 +146,14 @@ class LLMRouter:
             },
         }
 
-    def _call_anthropic(self, task_type: str, prompt: str) -> dict[str, Any]:
-        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    def _call_anthropic(self, task_type: str, prompt: str, runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
+        runtime = runtime_config or {}
+        api_key = str(runtime.get("llm_api_key") or os.getenv("ANTHROPIC_API_KEY", "")).strip()
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is required when provider=anthropic")
 
-        base_url = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1").rstrip("/")
-        model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
+        base_url = str(runtime.get("llm_base_url") or os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")).rstrip("/")
+        model = str(runtime.get("llm_model") or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"))
         system_prompt = os.getenv(
             "LLM_SYSTEM_PROMPT",
             "You are a factual assistant. Use citations and avoid unsupported claims.",
@@ -215,17 +218,28 @@ class LLMRouter:
         state.fail_count = 0
         state.opened_at = None
 
-    def _invoke_provider(self, provider: str, task_type: str, prompt: str) -> dict[str, Any]:
+    def _invoke_provider(
+        self,
+        provider: str,
+        task_type: str,
+        prompt: str,
+        runtime_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if provider == "openai":
-            return self._call_openai(task_type=task_type, prompt=prompt)
+            return self._call_openai(task_type=task_type, prompt=prompt, runtime_config=runtime_config)
         if provider == "anthropic":
-            return self._call_anthropic(task_type=task_type, prompt=prompt)
+            return self._call_anthropic(task_type=task_type, prompt=prompt, runtime_config=runtime_config)
         return self._stub_result(prompt)
 
-    def route_and_generate(self, task_type: str, prompt: str) -> dict[str, Any]:
+    def route_and_generate(
+        self,
+        task_type: str,
+        prompt: str,
+        runtime_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         start = time.time()
         clean_prompt = self._sanitize_prompt(prompt)
-        providers, meta = self._providers_for_task(task_type=task_type)
+        providers, meta = self._providers_for_task(task_type=task_type, runtime_config=runtime_config)
 
         attempted: list[str] = []
         errors: list[str] = []
@@ -243,7 +257,12 @@ class LLMRouter:
 
                 attempted.append(provider)
                 try:
-                    result = self._invoke_provider(provider=provider, task_type=task_type, prompt=clean_prompt)
+                    result = self._invoke_provider(
+                        provider=provider,
+                        task_type=task_type,
+                        prompt=clean_prompt,
+                        runtime_config=runtime_config,
+                    )
                     self._record_success(provider)
                     if result.get("provider") != "stub" or provider == "stub":
                         break

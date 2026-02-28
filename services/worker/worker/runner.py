@@ -38,7 +38,11 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     rt.doc_registry.mark_version_status(version_id=version_id, status="processing", notes={"job": job})
 
     pdf_bytes = rt.storage.get_bytes(object_key)
-    mineru_result = rt.mineru_client.parse_pdf(pdf_bytes)
+    runtime_config = job.get("runtime_config") if isinstance(job.get("runtime_config"), dict) else {}
+    try:
+        mineru_result = rt.mineru_client.parse_pdf(pdf_bytes, runtime_config=runtime_config)
+    except TypeError:
+        mineru_result = rt.mineru_client.parse_pdf(pdf_bytes)
     result = process_mineru_result(doc_id=doc_id, version_id=version_id, mineru_result=mineru_result)
 
     ie_assets: list[dict[str, Any]] = []
