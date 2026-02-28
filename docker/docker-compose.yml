@@ -1,0 +1,72 @@
+version: "3.9"
+services:
+  api-server:
+    image: expertkb/api-server:latest
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/expertkb
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - VECTORDB_ENDPOINT=qdrant:6333
+      - CONFIG_DIR=/configs
+    volumes:
+      - ./configs:/configs:ro
+    ports:
+      - "8080:8080"
+    depends_on: [postgres, redis, minio, qdrant]
+
+  worker:
+    image: expertkb/worker:latest
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/expertkb
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - VECTORDB_ENDPOINT=qdrant:6333
+      - CONFIG_DIR=/configs
+    volumes:
+      - ./configs:/configs:ro
+    depends_on: [postgres, redis, minio, qdrant]
+
+  web-ui:
+    image: expertkb/web-ui:latest
+    ports:
+      - "80:80"
+    depends_on: [api-server]
+
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=expertkb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T02-00-34Z
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minio
+      - MINIO_ROOT_PASSWORD=minio123
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  qdrant:
+    image: qdrant/qdrant:v1.10.1
+    volumes:
+      - qdrantdata:/qdrant/storage
+    ports:
+      - "6333:6333"
+
+volumes:
+  pgdata:
+  miniodata:
+  qdrantdata:

@@ -1,0 +1,117 @@
+version: "v1.0"
+
+page_type_detection:
+  rules:
+    cover:
+      keywords_any: ["投标文件","施工组织设计","技术方案","资质证书","业绩证明","公司简介"]
+      regex_any: []
+      score: 3
+    catalog:
+      keywords_any: ["目录","目 录","contents"]
+      regex_any: []
+      score: 5
+    certificate_main:
+      keywords_any: ["资质证书","建筑业企业资质证书","安全生产许可证","许可范围","资质类别"]
+      regex_any: ["证书编号[:：\s]*[A-Z0-9\-]{6,}"]
+      score: 6
+    certificate_seal:
+      keywords_any: ["发证机关","颁发机关","签发机关","（盖章）","印章"]
+      regex_any: ["发证日期|签发日期|批准日期"]
+      score: 6
+    contract_main:
+      keywords_any: ["合同协议书","合同条款","合同价款","发包人","承包人"]
+      regex_any: []
+      score: 6
+    contract_signature:
+      keywords_any: ["甲方","乙方","法定代表人","授权代表","签字","签章","盖章"]
+      regex_any: ["签订日期|签约日期"]
+      score: 7
+    bid_notice:
+      keywords_any: ["中标通知书","中标人","招标人","招标编号"]
+      regex_any: []
+      score: 7
+    acceptance:
+      keywords_any: ["竣工验收","验收结论","验收组","竣工日期","交工验收"]
+      regex_any: []
+      score: 7
+    owner_proof:
+      keywords_any: ["业主证明","建设单位证明","情况说明","特此证明"]
+      regex_any: []
+      score: 6
+    resume:
+      keywords_any: ["个人简历","工作经历","主要业绩","任职","项目经历"]
+      regex_any: []
+      score: 5
+    equipment_list:
+      keywords_any: ["设备清单","主要机械设备","拟投入本工程的主要施工机械设备表"]
+      regex_any: []
+      score: 7
+    project_summary_list:
+      keywords_any: ["业绩汇总","类似工程业绩","主要业绩表","工程业绩一览表"]
+      regex_any: []
+      score: 7
+    standard_header:
+      keywords_any: ["国家标准","行业标准","发布","实施","前言","中华人民共和国"]
+      regex_any: ["GB\s*\d+\-\d{4}|DL\s*\/|JGJ\s*\d+\-\d{4}"]
+      score: 6
+    standard_body:
+      keywords_any: ["范围","规范性引用文件","术语和定义","要求","条文说明"]
+      regex_any: []
+      score: 3
+    power_param_table:
+      keywords_any: ["kV","MVA","线路长度","主变","回路","导线","截面","电缆"]
+      regex_any: ["\d{2,3}\s*(kV|KV)|\d+\s*(MVA|兆伏安)|[0-9\.]+\s*(km|公里)"]
+      score: 8
+    power_commissioning:
+      keywords_any: ["调试","试验","投运","送电","带电","启动"]
+      regex_any: []
+      score: 6
+
+field_page_type_priority:
+  qualification:
+    certificate_number:
+      prefer_page_types: ["certificate_main","certificate_seal"]
+      avoid_page_types: ["catalog","cover"]
+    issuing_authority:
+      prefer_page_types: ["certificate_seal","certificate_main"]
+    valid_from:
+      prefer_page_types: ["certificate_seal","certificate_main"]
+    valid_to:
+      prefer_page_types: ["certificate_seal","certificate_main"]
+  person:
+    person_name:
+      prefer_page_types: ["resume","certificate_main"]
+    certificate_number:
+      prefer_page_types: ["certificate_main"]
+    valid_to:
+      prefer_page_types: ["certificate_main","certificate_seal"]
+  project:
+    project_name:
+      prefer_page_types: ["bid_notice","contract_main","owner_proof","acceptance"]
+    contract_amount_original:
+      prefer_page_types: ["contract_main","contract_signature","bid_notice"]
+    contract_sign_date:
+      prefer_page_types: ["contract_signature"]
+    completion_date:
+      prefer_page_types: ["acceptance","owner_proof"]
+    owner_unit:
+      prefer_page_types: ["contract_main","bid_notice","owner_proof"]
+  standard:
+    standard_number:
+      prefer_page_types: ["standard_header"]
+    standard_name:
+      prefer_page_types: ["standard_header"]
+    implement_date:
+      prefer_page_types: ["standard_header"]
+  power_special:
+    voltage_level_kv:
+      prefer_page_types: ["power_param_table","contract_main","owner_proof","acceptance"]
+      avoid_page_types: ["catalog","cover"]
+    substation_capacity_mva:
+      prefer_page_types: ["power_param_table","contract_main","acceptance"]
+    transformer_capacity_mva:
+      prefer_page_types: ["power_param_table","contract_main","acceptance"]
+    line_length_km:
+      prefer_page_types: ["power_param_table","contract_main","owner_proof"]
+    cable_type:
+      prefer_page_types: ["power_param_table","contract_main"]

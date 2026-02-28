@@ -1,0 +1,39 @@
+{
+  "version": "routing_policy_v1",
+  "tiers": {
+    "tier1": "CN_PRIMARY",
+    "tier2": "CN_SECONDARY",
+    "tier3": "TRANSIT"
+  },
+  "tasks": {
+    "embedding": [
+      "tier1",
+      "tier2",
+      "tier3"
+    ],
+    "ie_extract": [
+      "tier1",
+      "tier2",
+      "tier3"
+    ],
+    "table_repair": [
+      "tier2",
+      "tier1",
+      "tier3"
+    ],
+    "qa_generate": [
+      "tier1",
+      "tier3",
+      "tier2"
+    ],
+    "classify_assist": [
+      "tier1",
+      "tier2",
+      "tier3"
+    ]
+  },
+  "circuit_breaker": {
+    "fail_threshold": 5,
+    "cooldown_seconds": 300
+  }
+}

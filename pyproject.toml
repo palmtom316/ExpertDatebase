@@ -1,0 +1,17 @@
+[project]
+name = "expertdatebase"
+version = "0.1.0"
+description = "ExpertDatebase monorepo"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "sqlalchemy",
+  "pydantic",
+  "pyyaml",
+  "alembic",
+]
+
+[tool.unittest]
+start-directory = "tests"
+pattern = "test_*.py"

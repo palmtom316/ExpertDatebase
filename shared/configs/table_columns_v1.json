@@ -1,0 +1,24 @@
+{
+  "version": "table_columns_v1",
+  "equipment": [
+    "equipment_name",
+    "model",
+    "quantity",
+    "unit",
+    "remark"
+  ],
+  "person": [
+    "person_name",
+    "role",
+    "certificate_type",
+    "certificate_number",
+    "valid_to"
+  ],
+  "project_summary": [
+    "project_name",
+    "region",
+    "category",
+    "amount",
+    "date"
+  ]
+}

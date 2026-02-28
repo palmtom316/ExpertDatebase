@@ -1,0 +1,72 @@
+{
+  "version": "ie_schema_v1",
+  "asset_types": {
+    "project": {
+      "fields": [
+        "project_name",
+        "project_region",
+        "project_category",
+        "contract_amount_original",
+        "contract_amount_rmb",
+        "contract_sign_date",
+        "completion_date",
+        "owner_unit",
+        "proof_type",
+        "voltage_level_kv",
+        "substation_capacity_mva",
+        "line_length_km",
+        "transformer_capacity_mva",
+        "cable_type"
+      ]
+    },
+    "qualification": {
+      "fields": [
+        "qualification_name",
+        "qualification_level",
+        "certificate_number",
+        "issuing_authority",
+        "valid_from",
+        "valid_to"
+      ]
+    },
+    "person": {
+      "fields": [
+        "person_name",
+        "certificate_type",
+        "major",
+        "certificate_number",
+        "valid_from",
+        "valid_to"
+      ]
+    },
+    "equipment": {
+      "fields": [
+        "equipment_name",
+        "model",
+        "quantity",
+        "unit",
+        "remark"
+      ]
+    },
+    "standard": {
+      "fields": [
+        "standard_number",
+        "standard_name",
+        "publish_date",
+        "implement_date",
+        "applicable_region"
+      ]
+    }
+  },
+  "grounding": {
+    "required": true,
+    "fields": [
+      "source_page",
+      "source_excerpt",
+      "source_type",
+      "block_id",
+      "table_id",
+      "row_index"
+    ]
+  }
+}

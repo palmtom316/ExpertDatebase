@@ -1,0 +1,161 @@
+version: "v1.0"
+
+global:
+  normalize:
+    - name: fullwidth_to_halfwidth
+    - name: collapse_whitespace
+    - name: remove_invisible_chars
+    - name: normalize_punctuation
+    - name: uppercase_english
+  synonyms:
+    "证书编号": ["证书号","编号","证号","证书号码","No.","NO."]
+    "有效期": ["有效期限","有效至","截止日期","到期日","有效期止"]
+    "发证机关": ["发证单位","签发机关","颁发机关","颁发单位"]
+    "项目名称": ["工程名称","项目名","工程项目名称"]
+    "合同金额": ["合同价","合同价款","合同总价","中标价","工程造价"]
+    "业主单位": ["建设单位","发包人","业主","招标人"]
+  scoring_weights:
+    exact_value_hit: 10
+    keyword_hit: 4
+    regex_hit: 6
+    title_proximity: 3
+    same_page_bonus: 2
+    table_row_hit: 8
+    penalty_garbled: -5
+    page_type_bonus: 4
+    page_type_penalty: -4
+  context_window:
+    before_chars: 220
+    after_chars: 220
+
+doc_types:
+  qualification:
+    fields:
+      certificate_number:
+        keywords: ["证书编号","证书号","编号","证号","No.","NO."]
+        regex:
+          - "(证书编号|证书号|编号|证号)[:：\s]*([A-Z0-9\-]{6,})"
+      valid_to:
+        keywords: ["有效期","有效至","截止","到期"]
+        regex:
+          - "(有效至|截止|至)[:：\s]*((20\d{2})[年\-\./](\d{1,2})[月\-\./](\d{1,2})日?|长期)"
+      issuing_authority:
+        keywords: ["发证机关","颁发机关","签发机关","发证单位"]
+        regex: []
+  person:
+    fields:
+      person_name:
+        keywords: ["姓名","持证人","人员姓名"]
+        regex: ["(姓名|持证人)[:：\s]*([\u4e00-\u9fa5]{2,4})"]
+      certificate_number:
+        keywords: ["证书编号","证书号","注册编号","执业证号"]
+        regex:
+          - "(注册编号|证书编号|证书号|执业证号)[:：\s]*([A-Z0-9\-]{6,})"
+      valid_to:
+        keywords: ["有效期","有效至","截止","到期"]
+        regex: []
+  project:
+    fields:
+      project_name:
+        keywords: ["项目名称","工程名称","工程项目名称"]
+        regex: []
+      contract_amount_original:
+        keywords: ["合同金额","合同价","中标价","工程造价","合同总价"]
+        regex:
+          - "(合同金额|合同价|中标价)[:：\s]*([0-9,\.]+)\s*(万元|万|亿元|元)?"
+      contract_sign_date:
+        keywords: ["签订日期","合同签订","签约日期"]
+        regex: []
+      completion_date:
+        keywords: ["竣工日期","完工日期","验收日期","交工日期"]
+        regex: []
+      owner_unit:
+        keywords: ["业主单位","建设单位","发包人","招标人"]
+        regex: []
+  standard:
+    fields:
+      standard_number:
+        keywords: ["标准号","编号","规程号","规范号"]
+        regex:
+          - "([A-Z]{1,5}\s*\d{1,4}\-\d{4})"
+      implement_date:
+        keywords: ["实施日期","施行日期","实施时间"]
+        regex: []
+
+power_special:
+  fields:
+    voltage_level_kv:
+      keywords: ["电压等级","kV","千伏","额定电压"]
+      regex:
+        - "(\d{1,3})\s*(kV|KV|千伏)"
+        - "(电压等级|额定电压)[:：\s]*\s*(\d{1,3})\s*(kV|KV|千伏)"
+      allowed_values: [10,35,66,110,220,330,500,750,1000]
+    substation_capacity_mva:
+      keywords: ["变电站容量","主变容量","容量","MVA","兆伏安"]
+      regex:
+        - "(\d+)\s*[×xX]\s*(\d+)\s*(MVA|兆伏安)"
+        - "(主变|主变压器).{0,10}(\d+)\s*(MVA|兆伏安)"
+    transformer_capacity_mva:
+      keywords: ["主变","主变压器","变压器容量","MVA"]
+      regex:
+        - "(主变|主变压器).{0,10}(\d{1,3})\s*(MVA|兆伏安)"
+    line_length_km:
+      keywords: ["线路长度","线路全长","全长","km","公里","架空线路","电缆线路"]
+      regex:
+        - "(线路长度|线路全长|全长)[:：\s]*([0-9\.]+)\s*(km|KM|公里)"
+        - "([0-9\.]+)\s*(km|KM|公里).{0,6}(线路|电缆|架空)"
+      tolerance: 0.1
+    cable_type:
+      keywords: ["电缆型号","电缆类型","导线型号","LGJ","YJV","JKLYJ"]
+      regex:
+        - "(YJV|VV|ZR\-YJV|JKLYJ)[A-Z0-9\-\/\*]+"
+        - "(LGJ|JL/G1A|ACSR)[A-Z0-9\-\/\*]+"
+  chapter_title_hints:
+    - "输电线路工程"
+    - "变电站工程"
+    - "继电保护"
+    - "调试试验"
+    - "送电投运"
+    - "配网工程"
+
+table_kinds:
+  equipment:
+    header_keywords_any:
+      - ["设备名称","名称","机械设备"]
+      - ["型号","规格"]
+      - ["数量","台数","套数"]
+    min_columns: 3
+  person:
+    header_keywords_any:
+      - ["姓名","人员"]
+      - ["证书","证书号","注册编号"]
+      - ["岗位","职务"]
+      - ["有效期","到期"]
+    min_columns: 3
+  project_summary:
+    header_keywords_any:
+      - ["项目名称","工程名称"]
+      - ["合同金额","中标价","金额"]
+      - ["地区","地点"]
+      - ["时间","日期","竣工"]
+    min_columns: 3
+
+chapter_titles:
+  level1_patterns:
+    - "^第[一二三四五六七八九十0-9]+章"
+    - "^[一二三四五六七八九十]+、"
+    - "^\d+\s"
+  level2_patterns:
+    - "^第[一二三四五六七八九十0-9]+节"
+    - "^\d+\.\d+"
+    - "^（[一二三四五六七八九十]+）"
+  common_titles:
+    - "工程概况"
+    - "项目概况"
+    - "施工组织"
+    - "质量保证"
+    - "安全文明施工"
+    - "人员配备"
+    - "设备投入"
+    - "主要业绩"
+    - "资质证明"
