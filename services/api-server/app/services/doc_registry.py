@@ -14,6 +14,12 @@ class DocRegistry(Protocol):
     def add_document(self, doc: dict[str, Any], version: dict[str, Any]) -> None:
         raise NotImplementedError
 
+    def list_versions(self, statuses: list[str] | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def update_version_status(self, version_id: str, status: str, notes: dict[str, Any] | None = None) -> None:
+        raise NotImplementedError
+
 
 class JSONDocRegistry:
     def __init__(self, path: Path) -> None:
@@ -32,6 +38,26 @@ class JSONDocRegistry:
         payload = self._read()
         payload["documents"].append(doc)
         payload["versions"].append(version)
+        self._write(payload)
+
+    def list_versions(self, statuses: list[str] | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        payload = self._read()
+        items = payload.get("versions", [])
+        if statuses:
+            allowed = set(statuses)
+            items = [v for v in items if v.get("status") in allowed]
+        if limit is not None:
+            items = items[:limit]
+        return list(items)
+
+    def update_version_status(self, version_id: str, status: str, notes: dict[str, Any] | None = None) -> None:
+        payload = self._read()
+        for version in payload.get("versions", []):
+            if version.get("id") == version_id:
+                version["status"] = status
+                if notes is not None:
+                    version["notes"] = notes
+                break
         self._write(payload)
 
 
@@ -106,6 +132,65 @@ class SQLDocRegistry:
                     "version_no": int(version.get("version_no", 1)),
                     "storage_key": version["storage_key"],
                     "status": version.get("status", "uploaded"),
+                },
+            )
+
+    def list_versions(self, statuses: list[str] | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        self._ensure_schema()
+        query = "SELECT id, doc_id, storage_key, status, notes, created_at FROM document_versions"
+        params: dict[str, Any] = {}
+
+        if statuses:
+            placeholders = []
+            for idx, status in enumerate(statuses):
+                key = f"status_{idx}"
+                placeholders.append(f":{key}")
+                params[key] = status
+            query += f" WHERE status IN ({','.join(placeholders)})"
+
+        query += " ORDER BY created_at DESC"
+        if limit is not None:
+            query += " LIMIT :limit"
+            params["limit"] = int(limit)
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(text(query), params).mappings().all()
+
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            notes = row.get("notes")
+            if isinstance(notes, str):
+                try:
+                    notes = json.loads(notes)
+                except json.JSONDecodeError:
+                    notes = {"raw": notes}
+            out.append(
+                {
+                    "id": row.get("id"),
+                    "doc_id": row.get("doc_id"),
+                    "storage_key": row.get("storage_key"),
+                    "status": row.get("status"),
+                    "notes": notes,
+                    "created_at": str(row.get("created_at")),
+                }
+            )
+        return out
+
+    def update_version_status(self, version_id: str, status: str, notes: dict[str, Any] | None = None) -> None:
+        self._ensure_schema()
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE document_versions
+                    SET status=:status, notes=:notes
+                    WHERE id=:version_id
+                    """
+                ),
+                {
+                    "status": status,
+                    "notes": json.dumps(notes, ensure_ascii=False) if notes is not None else None,
+                    "version_id": version_id,
                 },
             )
 
