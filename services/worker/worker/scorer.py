@@ -32,3 +32,17 @@ def score_qa(cite_presence: float, cite_acc: float, fact_acc: float, refusal_acc
 def score_retrieval(hit5: float, hit10: float, mrr: float, latency_score: float) -> float:
     score = 40 * hit5 + 30 * hit10 + 20 * mrr + 10 * latency_score
     return clamp_0_100(score)
+
+
+def amount_within_tolerance(pred_amount: float, truth_amount: float, tolerance: float = 0.01) -> bool:
+    if truth_amount == 0:
+        return pred_amount == 0
+    return abs(pred_amount - truth_amount) <= abs(truth_amount) * tolerance
+
+
+def voltage_exact_match(pred_kv: int, truth_kv: int) -> bool:
+    return int(pred_kv) == int(truth_kv)
+
+
+def line_length_within_tolerance(pred_km: float, truth_km: float, tolerance_km: float = 0.1) -> bool:
+    return abs(float(pred_km) - float(truth_km)) <= tolerance_km

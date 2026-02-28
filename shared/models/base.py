@@ -13,5 +13,6 @@ class Base(DeclarativeBase):
 from . import asset  # noqa: E402,F401
 from . import chunk  # noqa: E402,F401
 from . import document  # noqa: E402,F401
+from . import entity_dictionary  # noqa: E402,F401
 from . import eval  # noqa: E402,F401
 from . import llm_call_log  # noqa: E402,F401

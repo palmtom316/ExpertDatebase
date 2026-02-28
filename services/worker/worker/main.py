@@ -9,6 +9,7 @@ import time
 from worker.asset_writer import build_asset_repo_from_env
 from worker.doc_registry import build_doc_status_registry_from_env
 from worker.embedding_client import EmbeddingClient
+from worker.entity_index import build_entity_index_from_env
 from worker.mineru_client import MinerUClient
 from worker.qdrant_index import ensure_payload_indexes
 from worker.qdrant_repo import create_qdrant_repo_from_env
@@ -43,6 +44,7 @@ def run_forever(max_idle_cycles: int | None = None) -> None:
         mineru_client=MinerUClient(),
         embedding_client=EmbeddingClient(),
         asset_repo=build_asset_repo_from_env(),
+        entity_index=build_entity_index_from_env(),
     )
 
     idle = 0

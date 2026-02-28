@@ -95,6 +95,7 @@ def build_payload(
         "page_type": page_type or "other",
         "has_citation": True,
         "excerpt": make_excerpt(chunk.get("text", "")),
+        "chunk_text": chunk.get("text", ""),
         "block_ids": chunk.get("block_ids", []),
     }
 

@@ -11,8 +11,10 @@ from app.api.admin_jobs import router as admin_jobs_router
 from app.api.chat import router as chat_router
 from app.api.search import router as search_router
 from app.api.upload import router as upload_router
+from app.services.secrets_guard import validate_runtime_secrets
 
 app = FastAPI(title="ExpertDatebase API", version="0.1.0")
+validate_runtime_secrets()
 
 cors_origins_raw = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500")
 cors_origins = [item.strip() for item in cors_origins_raw.split(",") if item.strip()]

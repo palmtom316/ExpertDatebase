@@ -41,6 +41,11 @@ services:
     ports:
       - "8080:8080"
     depends_on: [postgres, redis, minio, qdrant]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
 
   worker:
     build:
@@ -67,6 +72,27 @@ services:
       - ../shared/configs:/configs:ro
       - objectdata:/data/objects
     depends_on: [postgres, redis, minio, qdrant]
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  scheduler:
+    build:
+      context: ..
+      dockerfile: services/scheduler/Dockerfile
+    image: expertkb/scheduler:dev
+    environment:
+      - SCHEDULER_API_BASE=http://api-server:8080
+      - SCHEDULER_EXPIRY_INTERVAL_S=${SCHEDULER_EXPIRY_INTERVAL_S:-300}
+      - SCHEDULER_EVAL_INTERVAL_S=${SCHEDULER_EVAL_INTERVAL_S:-900}
+    depends_on: [api-server]
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   web-ui:
     build:

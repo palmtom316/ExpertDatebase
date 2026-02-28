@@ -14,6 +14,7 @@ class TestSchemaTables(unittest.TestCase):
             "eval_run",
             "eval_sample",
             "eval_result",
+            "entity_dictionary",
         }
         actual = set(Base.metadata.tables.keys())
         self.assertTrue(expected.issubset(actual), f"missing: {expected - actual}")

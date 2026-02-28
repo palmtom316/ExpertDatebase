@@ -45,7 +45,7 @@ ANTHROPIC_MODEL=claude-3-5-sonnet-latest
 ## Docker 启动（后端 + 基础设施）
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d postgres redis minio qdrant api-server worker
+docker compose -f docker/docker-compose.yml up -d postgres redis minio qdrant api-server worker scheduler
 ```
 
 后端健康检查：
@@ -88,6 +88,12 @@ docker compose -f docker/docker-compose.yml --profile ui up -d --build web-ui
 ```
 
 前端访问：`http://localhost:5500`（已支持 PDF 上传并实时轮询抽取状态）。
+
+## 评测与趋势
+
+- 一键加入评测集：`POST /api/admin/eval/datasets/add`
+- 启动评测运行：`POST /api/admin/eval/runs/start`
+- 查看趋势指标：`GET /api/admin/eval/trends`
 
 ## 测试
 

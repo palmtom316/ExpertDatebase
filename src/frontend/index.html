@@ -17,7 +17,7 @@
     </div>
     <div class="topbar-actions">
       <button id="upload-trigger" class="btn-jelly btn-secondary" type="button">上传文档</button>
-      <button class="btn-jelly btn-primary" type="button">新建评测</button>
+      <button id="start-eval-btn" class="btn-jelly btn-primary" type="button">新建评测</button>
     </div>
   </header>
   <input id="pdf-input" class="hidden-input" type="file" accept=".pdf,application/pdf">
@@ -25,7 +25,7 @@
   <main class="layout">
     <section class="panel query-panel">
       <h2>检索与过滤</h2>
-      <p class="subtitle">采用色盲友好配色，状态展示不依赖单一颜色。</p>
+      <p class="subtitle">文档列表来自后端 API，状态实时同步。</p>
 
       <label class="input-label" for="search-input">搜索关键词</label>
       <div class="query-row">
@@ -40,7 +40,7 @@
         <button class="filter-chip" data-filter="review" aria-pressed="false" type="button">需复核</button>
       </div>
 
-      <p id="result-count" class="result-count">3 条结果</p>
+      <p id="result-count" class="result-count">0 条结果</p>
     </section>
 
     <section class="panel upload-panel" aria-live="polite">
@@ -57,53 +57,32 @@
 
     <section class="metrics">
       <article class="panel metric-card">
-        <p class="metric-label">今日新增</p>
-        <p class="metric-value">18</p>
+        <p class="metric-label">评测失败率</p>
+        <p id="trend-failure-rate" class="metric-value">0%</p>
       </article>
       <article class="panel metric-card">
-        <p class="metric-label">平均检索耗时</p>
-        <p class="metric-value">1.2s</p>
+        <p class="metric-label">质量均分</p>
+        <p id="trend-quality-score" class="metric-value">0</p>
       </article>
       <article class="panel metric-card">
-        <p class="metric-label">引用命中率</p>
-        <p class="metric-value">93%</p>
+        <p class="metric-label">结果总数</p>
+        <p id="trend-total-results" class="metric-value">0</p>
       </article>
     </section>
 
     <section class="panel docs-panel">
       <div class="docs-header">
         <h2>文档列表</h2>
-        <button class="btn-jelly btn-secondary" type="button">批量重试失败任务</button>
+        <button id="retry-failed-btn" class="btn-jelly btn-secondary" type="button">批量重试失败任务</button>
       </div>
+      <ul class="doc-list"></ul>
+    </section>
 
-      <ul class="doc-list">
-        <li class="doc-row" data-state="indexed">
-          <div>
-            <h3>招标规范说明书（2026）</h3>
-            <p>最近更新：2026-02-28 10:46</p>
-          </div>
-          <span class="status status-indexed">✓ 已索引</span>
-          <button class="btn-jelly btn-ghost" type="button">查看引用</button>
-        </li>
-
-        <li class="doc-row" data-state="processing">
-          <div>
-            <h3>工程计量清单 v4</h3>
-            <p>最近更新：2026-02-28 09:55</p>
-          </div>
-          <span class="status status-processing">↻ 处理中</span>
-          <button class="btn-jelly btn-ghost" type="button">查看任务</button>
-        </li>
-
-        <li class="doc-row" data-state="review">
-          <div>
-            <h3>合同附件 A（扫描件）</h3>
-            <p>最近更新：2026-02-27 18:20</p>
-          </div>
-          <span class="status status-review">! 需复核</span>
-          <button class="btn-jelly btn-ghost" type="button">人工复核</button>
-        </li>
-      </ul>
+    <section class="panel review-panel">
+      <h2>Review 证据面板</h2>
+      <p class="subtitle">支持 PDF 页码定位、证据摘录与一键加入评测集。</p>
+      <p id="review-title" class="review-title">尚未选择文档</p>
+      <ul id="review-evidence-list" class="review-evidence-list"></ul>
     </section>
   </main>
 

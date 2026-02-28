@@ -7,7 +7,14 @@ WORKER_SERVICE = ROOT / "services" / "worker"
 if str(WORKER_SERVICE) not in sys.path:
     sys.path.insert(0, str(WORKER_SERVICE))
 
-from worker.scorer import score_ie, score_qa, score_retrieval  # noqa: E402
+from worker.scorer import (  # noqa: E402
+    amount_within_tolerance,
+    line_length_within_tolerance,
+    score_ie,
+    score_qa,
+    score_retrieval,
+    voltage_exact_match,
+)
 
 
 class TestEvalScoring(unittest.TestCase):
@@ -30,6 +37,18 @@ class TestEvalScoring(unittest.TestCase):
     def test_retrieval_score_formula(self) -> None:
         score = score_retrieval(hit5=0.9, hit10=1.0, mrr=0.8, latency_score=0.7)
         self.assertAlmostEqual(score, 36 + 30 + 16 + 7, places=2)
+
+    def test_amount_tolerance_plus_minus_one_percent(self) -> None:
+        self.assertTrue(amount_within_tolerance(pred_amount=1010000, truth_amount=1000000))
+        self.assertFalse(amount_within_tolerance(pred_amount=1030000, truth_amount=1000000))
+
+    def test_voltage_must_match_exactly(self) -> None:
+        self.assertTrue(voltage_exact_match(pred_kv=110, truth_kv=110))
+        self.assertFalse(voltage_exact_match(pred_kv=220, truth_kv=110))
+
+    def test_line_length_tolerance_plus_minus_point_one_km(self) -> None:
+        self.assertTrue(line_length_within_tolerance(pred_km=12.04, truth_km=12.1))
+        self.assertFalse(line_length_within_tolerance(pred_km=11.8, truth_km=12.1))
 
 
 if __name__ == "__main__":

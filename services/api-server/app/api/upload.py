@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import uuid
 from typing import Any
+from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
@@ -80,6 +81,26 @@ def upload_pdf_bytes(
         "object_key": object_key,
         "status": "accepted",
     }
+
+
+@router.get("/docs")
+def list_docs(limit: int | None = None) -> dict[str, Any]:
+    items = DEFAULT_REGISTRY.list_versions(limit=limit)
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        storage_key = str(item.get("storage_key", ""))
+        normalized.append(
+            {
+                "version_id": item.get("id"),
+                "doc_id": item.get("doc_id"),
+                "status": item.get("status"),
+                "storage_key": storage_key,
+                "doc_name": PurePosixPath(storage_key).name if storage_key else "",
+                "notes": item.get("notes"),
+                "created_at": item.get("created_at"),
+            }
+        )
+    return {"items": normalized, "count": len(normalized)}
 
 
 @router.post("/upload", status_code=202)

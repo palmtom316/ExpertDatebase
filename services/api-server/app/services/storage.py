@@ -13,7 +13,7 @@ from minio.error import S3Error
 
 
 class ObjectStorage(Protocol):
-    def put_bytes(self, object_key: str, data: bytes) -> None:
+    def put_bytes(self, object_key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
         raise NotImplementedError
 
     def exists(self, object_key: str) -> bool:
@@ -25,7 +25,7 @@ class LocalObjectStorage:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def put_bytes(self, object_key: str, data: bytes) -> None:
+    def put_bytes(self, object_key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
         target = self.root / object_key
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
@@ -56,10 +56,10 @@ class MinioObjectStorage:
             self.client.make_bucket(self.bucket)
         self._bucket_checked = True
 
-    def put_bytes(self, object_key: str, data: bytes) -> None:
+    def put_bytes(self, object_key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
         self._ensure_bucket()
         body = io.BytesIO(data)
-        self.client.put_object(self.bucket, object_key, body, len(data), content_type="application/pdf")
+        self.client.put_object(self.bucket, object_key, body, len(data), content_type=content_type)
 
     def exists(self, object_key: str) -> bool:
         self._ensure_bucket()

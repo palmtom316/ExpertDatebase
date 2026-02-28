@@ -169,6 +169,7 @@ def _to_citation(payload: dict[str, Any]) -> dict[str, Any]:
         "page_start": payload.get("page_start"),
         "page_end": payload.get("page_end"),
         "excerpt": payload.get("excerpt", ""),
+        "chunk_text": payload.get("chunk_text", ""),
     }
 
 
