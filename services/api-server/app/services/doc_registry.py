@@ -1,10 +1,18 @@
-"""Simple JSON registry for documents and versions."""
+"""Document registry adapters with JSON and SQL backends."""
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+from sqlalchemy import create_engine, text
+
+
+class DocRegistry(Protocol):
+    def add_document(self, doc: dict[str, Any], version: dict[str, Any]) -> None:
+        raise NotImplementedError
 
 
 class JSONDocRegistry:
@@ -25,3 +33,53 @@ class JSONDocRegistry:
         payload["documents"].append(doc)
         payload["versions"].append(version)
         self._write(payload)
+
+
+class SQLDocRegistry:
+    def __init__(self, database_url: str) -> None:
+        self.engine = create_engine(database_url, pool_pre_ping=True)
+
+    def add_document(self, doc: dict[str, Any], version: dict[str, Any]) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO documents (id, name, doc_type, created_at)
+                    VALUES (:id, :name, :doc_type, now())
+                    ON CONFLICT (id) DO NOTHING
+                    """
+                ),
+                {
+                    "id": doc["id"],
+                    "name": doc.get("name", "unknown"),
+                    "doc_type": doc.get("doc_type"),
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO document_versions (id, doc_id, version_no, storage_key, status, created_at)
+                    VALUES (:id, :doc_id, :version_no, :storage_key, :status, now())
+                    ON CONFLICT (id) DO NOTHING
+                    """
+                ),
+                {
+                    "id": version["id"],
+                    "doc_id": version["doc_id"],
+                    "version_no": int(version.get("version_no", 1)),
+                    "storage_key": version["storage_key"],
+                    "status": version.get("status", "uploaded"),
+                },
+            )
+
+
+def build_doc_registry_from_env() -> DocRegistry:
+    backend = os.getenv("DOC_REGISTRY_BACKEND", "auto").lower()
+    if backend == "json":
+        return JSONDocRegistry(Path(os.getenv("DOC_REGISTRY_PATH", ".runtime/registry.json")))
+
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return SQLDocRegistry(database_url)
+
+    return JSONDocRegistry(Path(os.getenv("DOC_REGISTRY_PATH", ".runtime/registry.json")))

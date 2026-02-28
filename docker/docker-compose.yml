@@ -5,11 +5,21 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/expertkb
       - REDIS_URL=redis://redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - VECTORDB_ENDPOINT=qdrant:6333
+      - REDIS_QUEUE_NAME=document:process
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+      - MINIO_BUCKET=expertkb
+      - VECTORDB_ENDPOINT=http://qdrant:6333
+      - QDRANT_COLLECTION=chunks_v1
+      - QDRANT_VECTOR_NAME=text_embedding
+      - DOC_REGISTRY_BACKEND=auto
+      - TASK_QUEUE_BACKEND=auto
+      - OBJECT_STORAGE_BACKEND=auto
+      - SEARCH_REPO_BACKEND=auto
       - CONFIG_DIR=/configs
     volumes:
-      - ./configs:/configs:ro
+      - ../shared/configs:/configs:ro
     ports:
       - "8080:8080"
     depends_on: [postgres, redis, minio, qdrant]
@@ -19,11 +29,18 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/expertkb
       - REDIS_URL=redis://redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - VECTORDB_ENDPOINT=qdrant:6333
+      - REDIS_QUEUE_NAME=document:process
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+      - MINIO_BUCKET=expertkb
+      - VECTORDB_ENDPOINT=http://qdrant:6333
+      - QDRANT_COLLECTION=chunks_v1
+      - QDRANT_VECTOR_NAME=text_embedding
+      - VECTORDB_BACKEND=auto
       - CONFIG_DIR=/configs
     volumes:
-      - ./configs:/configs:ro
+      - ../shared/configs:/configs:ro
     depends_on: [postgres, redis, minio, qdrant]
 
   web-ui:

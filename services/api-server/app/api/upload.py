@@ -3,26 +3,28 @@
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, UploadFile
 
-from app.services.doc_registry import JSONDocRegistry
-from app.services.storage import LocalObjectStorage
+from app.services.doc_registry import DocRegistry, build_doc_registry_from_env
+from app.services.storage import ObjectStorage, build_storage_from_env
+from app.services.task_queue import TaskQueue, build_task_queue_from_env
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
 
-DEFAULT_STORAGE = LocalObjectStorage(Path(".runtime/objects"))
-DEFAULT_REGISTRY = JSONDocRegistry(Path(".runtime/registry.json"))
+DEFAULT_STORAGE = build_storage_from_env()
+DEFAULT_REGISTRY = build_doc_registry_from_env()
+DEFAULT_TASK_QUEUE = build_task_queue_from_env()
 
 
 def upload_pdf_bytes(
     filename: str,
     content: bytes,
-    storage: LocalObjectStorage,
-    registry: JSONDocRegistry,
+    storage: ObjectStorage,
+    registry: DocRegistry,
+    task_queue: TaskQueue | None = None,
 ) -> dict[str, Any]:
     doc_id = f"doc_{uuid.uuid4().hex[:12]}"
     version_id = f"ver_{uuid.uuid4().hex[:12]}"
@@ -41,6 +43,10 @@ def upload_pdf_bytes(
         },
     )
 
+    queue_payload = {"doc_id": doc_id, "version_id": version_id, "object_key": object_key}
+    if task_queue is not None:
+        task_queue.enqueue_document_process(queue_payload)
+
     return {
         "doc_id": doc_id,
         "version_id": version_id,
@@ -52,4 +58,10 @@ def upload_pdf_bytes(
 @router.post("/upload", status_code=202)
 async def upload(file: UploadFile) -> dict[str, Any]:
     content = await file.read()
-    return upload_pdf_bytes(file.filename or "unknown.pdf", content, DEFAULT_STORAGE, DEFAULT_REGISTRY)
+    return upload_pdf_bytes(
+        filename=file.filename or "unknown.pdf",
+        content=content,
+        storage=DEFAULT_STORAGE,
+        registry=DEFAULT_REGISTRY,
+        task_queue=DEFAULT_TASK_QUEUE,
+    )

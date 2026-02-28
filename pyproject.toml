@@ -10,6 +10,10 @@ dependencies = [
   "pydantic",
   "pyyaml",
   "alembic",
+  "requests",
+  "redis",
+  "minio",
+  "psycopg2-binary",
 ]
 
 [tool.unittest]

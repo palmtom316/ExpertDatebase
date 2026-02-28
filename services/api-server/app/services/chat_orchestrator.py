@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.llm_router import LLMRouter
-from app.services.search_service import InMemoryQdrantRepo, hybrid_search
+from app.services.search_service import SearchRepo, hybrid_search
 
 
 def _build_expandable_evidence(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -27,7 +27,7 @@ def _build_expandable_evidence(citations: list[dict[str, Any]]) -> list[dict[str
 
 def chat_with_citations(
     question: str,
-    repo: InMemoryQdrantRepo,
+    repo: SearchRepo,
     entity_index: Any,
 ) -> dict[str, Any]:
     search_res = hybrid_search(question=question, repo=repo, entity_index=entity_index, top_k=5)

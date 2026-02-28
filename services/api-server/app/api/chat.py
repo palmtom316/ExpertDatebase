@@ -5,10 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.services.chat_orchestrator import chat_with_citations
-from app.services.search_service import InMemoryQdrantRepo
+from app.services.search_service import create_search_repo_from_env
 
 router = APIRouter(prefix="/api", tags=["chat"])
-REPO = InMemoryQdrantRepo()
+REPO = create_search_repo_from_env()
 
 
 class _EmptyEntityIndex:
