@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ExpertDatebase 控制台</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="ambient-shape ambient-shape--a" aria-hidden="true"></div>
+  <div class="ambient-shape ambient-shape--b" aria-hidden="true"></div>
+
+  <header class="panel topbar">
+    <div class="brand">
+      <p class="eyebrow">ExpertDatebase</p>
+      <h1>文档检索控制台</h1>
+    </div>
+    <div class="topbar-actions">
+      <button id="upload-trigger" class="btn-jelly btn-secondary" type="button">上传文档</button>
+      <button class="btn-jelly btn-primary" type="button">新建评测</button>
+    </div>
+  </header>
+  <input id="pdf-input" class="hidden-input" type="file" accept=".pdf,application/pdf">
+
+  <main class="layout">
+    <section class="panel query-panel">
+      <h2>检索与过滤</h2>
+      <p class="subtitle">采用色盲友好配色，状态展示不依赖单一颜色。</p>
+
+      <label class="input-label" for="search-input">搜索关键词</label>
+      <div class="query-row">
+        <input id="search-input" class="query-input" type="search" placeholder="输入文档名、章节或关键短语">
+        <button id="search-btn" class="btn-jelly btn-primary" type="button">开始检索</button>
+      </div>
+
+      <div class="filters" role="toolbar" aria-label="状态筛选">
+        <button class="filter-chip is-active" data-filter="all" aria-pressed="true" type="button">全部</button>
+        <button class="filter-chip" data-filter="indexed" aria-pressed="false" type="button">已索引</button>
+        <button class="filter-chip" data-filter="processing" aria-pressed="false" type="button">处理中</button>
+        <button class="filter-chip" data-filter="review" aria-pressed="false" type="button">需复核</button>
+      </div>
+
+      <p id="result-count" class="result-count">3 条结果</p>
+    </section>
+
+    <section class="panel upload-panel" aria-live="polite">
+      <h2>上传与抽取状态</h2>
+      <p class="subtitle">上传 PDF 后将自动入队，Worker 会开始抽取与索引。</p>
+      <p id="upload-message" class="upload-message">等待上传 PDF 文件。</p>
+      <div class="upload-meta-grid">
+        <p><strong>doc_id:</strong> <span id="upload-doc-id">-</span></p>
+        <p><strong>version_id:</strong> <span id="upload-version-id">-</span></p>
+        <p><strong>object_key:</strong> <span id="upload-object-key">-</span></p>
+        <p><strong>状态:</strong> <span id="upload-version-status">-</span></p>
+      </div>
+    </section>
+
+    <section class="metrics">
+      <article class="panel metric-card">
+        <p class="metric-label">今日新增</p>
+        <p class="metric-value">18</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">平均检索耗时</p>
+        <p class="metric-value">1.2s</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">引用命中率</p>
+        <p class="metric-value">93%</p>
+      </article>
+    </section>
+
+    <section class="panel docs-panel">
+      <div class="docs-header">
+        <h2>文档列表</h2>
+        <button class="btn-jelly btn-secondary" type="button">批量重试失败任务</button>
+      </div>
+
+      <ul class="doc-list">
+        <li class="doc-row" data-state="indexed">
+          <div>
+            <h3>招标规范说明书（2026）</h3>
+            <p>最近更新：2026-02-28 10:46</p>
+          </div>
+          <span class="status status-indexed">✓ 已索引</span>
+          <button class="btn-jelly btn-ghost" type="button">查看引用</button>
+        </li>
+
+        <li class="doc-row" data-state="processing">
+          <div>
+            <h3>工程计量清单 v4</h3>
+            <p>最近更新：2026-02-28 09:55</p>
+          </div>
+          <span class="status status-processing">↻ 处理中</span>
+          <button class="btn-jelly btn-ghost" type="button">查看任务</button>
+        </li>
+
+        <li class="doc-row" data-state="review">
+          <div>
+            <h3>合同附件 A（扫描件）</h3>
+            <p>最近更新：2026-02-27 18:20</p>
+          </div>
+          <span class="status status-review">! 需复核</span>
+          <button class="btn-jelly btn-ghost" type="button">人工复核</button>
+        </li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="./main.js"></script>
+</body>
+</html>

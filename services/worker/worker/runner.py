@@ -7,6 +7,7 @@ from typing import Any
 
 from worker.build_payload import build_payload
 from worker.embedding_client import EmbeddingClient
+from worker.ie_extract import extract_assets_from_chapter
 from worker.mineru_client import MinerUClient
 from worker.pipeline import process_mineru_result
 
@@ -23,6 +24,7 @@ class WorkerRuntime:
     doc_registry: Any
     mineru_client: MinerUClient
     embedding_client: EmbeddingClient
+    asset_repo: Any | None = None
 
 
 def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, Any]:
@@ -36,6 +38,23 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     mineru_result = rt.mineru_client.parse_pdf(pdf_bytes)
     result = process_mineru_result(doc_id=doc_id, version_id=version_id, mineru_result=mineru_result)
 
+    ie_assets: list[dict[str, Any]] = []
+    for chapter in result["chapters"]:
+        ie_assets.extend(
+            extract_assets_from_chapter(
+                text=str(chapter.get("text", "")),
+                page_no=int(chapter.get("start_page", 0) or 0),
+            )
+        )
+
+    assets_written = 0
+    if rt.asset_repo is not None and ie_assets:
+        write_result = rt.asset_repo.write_assets(doc_id=doc_id, version_id=version_id, assets=ie_assets)
+        if isinstance(write_result, int):
+            assets_written = write_result
+        else:
+            assets_written = len(ie_assets)
+
     entity_index = _EntityIndex()
     upserted = 0
     for chunk in result["chunks"]:
@@ -47,7 +66,7 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
         }
         payload = build_payload(
             chunk=chunk_for_payload,
-            ie_assets=[],
+            ie_assets=ie_assets,
             relations_light=[],
             entity_index=entity_index,
             page_type="other",
@@ -56,6 +75,11 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
         rt.qdrant_repo.upsert(point_id=chunk_for_payload["chunk_id"], vector=vector, payload=payload)
         upserted += 1
 
-    summary = {"chunks": len(result["chunks"]), "upserted": upserted}
+    summary = {
+        "chunks": len(result["chunks"]),
+        "upserted": upserted,
+        "assets_extracted": len(ie_assets),
+        "assets_written": assets_written,
+    }
     rt.doc_registry.mark_version_status(version_id=version_id, status="processed", notes=summary)
     return summary

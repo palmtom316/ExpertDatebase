@@ -21,11 +21,73 @@ cp .env.example .env
 pytest -q
 ```
 
-## Docker 启动（基础设施）
+## 商业 LLM 配置（本地调试）
+
+在 `.env` 里选择 provider：
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+LLM_PROVIDER=openai
+OPENAI_API_KEY=你的密钥
+OPENAI_MODEL=gpt-4o-mini
+# OPENAI_BASE_URL 可换成任意 OpenAI 兼容网关
 ```
+
+或：
+
+```bash
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=你的密钥
+ANTHROPIC_MODEL=claude-3-5-sonnet-latest
+```
+
+不配置密钥时会自动回退本地 stub（便于离线开发）。
+
+## Docker 启动（后端 + 基础设施）
+
+```bash
+docker compose -f docker/docker-compose.yml up -d postgres redis minio qdrant api-server worker
+```
+
+后端健康检查：
+
+```bash
+curl http://localhost:8080/health
+```
+
+## 本地联调：上传 PDF 并启动抽取
+
+1. 启动服务后，上传文件：
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/upload" \
+  -F "file=@/绝对路径/your.pdf"
+```
+
+响应会返回 `doc_id/version_id/object_key`，其中 `version_id` 用于查状态。
+
+2. 查看抽取进度：
+
+```bash
+curl -sS "http://localhost:8080/api/admin/docs/<version_id>/artifacts"
+```
+
+`intermediate.status` 会经历 `uploaded -> processing -> processed`（失败时为 `failed`）。
+
+3. 发起问答（走商业 LLM 或本地 stub）：
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/chat" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"合同金额是多少？"}'
+```
+
+## Docker 启动（前端）
+
+```bash
+docker compose -f docker/docker-compose.yml --profile ui up -d --build web-ui
+```
+
+前端访问：`http://localhost:5500`（已支持 PDF 上传并实时轮询抽取状态）。
 
 ## 测试
 

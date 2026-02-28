@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.services.auth import ROLE_SYSTEM_ADMIN, require_roles
 from app.services.doc_registry import build_doc_registry_from_env
 from app.services.retry_service import cleanup_failed_versions, list_failed_versions, retry_failed_versions
 from app.services.task_queue import build_task_queue_from_env
 
-router = APIRouter(prefix="/api/admin/jobs", tags=["admin-jobs"])
+router = APIRouter(
+    prefix="/api/admin/jobs",
+    tags=["admin-jobs"],
+    dependencies=[Depends(require_roles([ROLE_SYSTEM_ADMIN]))],
+)
 
 REGISTRY = build_doc_registry_from_env()
 TASK_QUEUE = build_task_queue_from_env()

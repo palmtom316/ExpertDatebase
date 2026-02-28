@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Any, Protocol
 from uuid import UUID, uuid5, NAMESPACE_URL
@@ -93,19 +94,25 @@ class QdrantHttpRepo:
 
     def search(self, query_vector: list[float], filter_json: dict[str, Any] | None, limit: int = 5) -> list[dict[str, Any]]:
         body: dict[str, Any] = {
-            "vector": {"name": self.vector_name, "vector": query_vector},
+            "query": query_vector,
+            "using": self.vector_name,
             "limit": limit,
+            "with_payload": True,
         }
         if filter_json:
             body["filter"] = filter_json
 
         resp = requests.post(
-            self._url(f"/collections/{self.collection}/points/search"),
+            self._url(f"/collections/{self.collection}/points/query"),
             json=body,
             timeout=self.timeout_s,
         )
         resp.raise_for_status()
-        result = resp.json().get("result", [])
+        payload = resp.json().get("result", [])
+        if isinstance(payload, dict):
+            result = payload.get("points", [])
+        else:
+            result = payload
 
         hits: list[dict[str, Any]] = []
         for item in result:
@@ -120,9 +127,16 @@ class QdrantHttpRepo:
 
 
 class SimpleEmbeddingClient:
+    def __init__(self, dim: int = 8) -> None:
+        self.dim = dim
+
     def embed_text(self, text: str) -> list[float]:
-        n = max(len(text), 1)
-        return [0.1, min(n / 1000.0, 1.0)]
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        values: list[float] = []
+        for i in range(self.dim):
+            b = digest[i]
+            values.append((b / 255.0) * 2 - 1)
+        return values
 
 
 def _match_filter(payload: dict[str, Any], filter_json: dict[str, Any] | None) -> bool:

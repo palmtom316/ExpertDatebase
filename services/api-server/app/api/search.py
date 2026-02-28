@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.services.auth import ALL_ROLES, require_roles
 from app.services.search_service import create_search_repo_from_env, hybrid_search
 
-router = APIRouter(prefix="/api", tags=["search"])
+router = APIRouter(
+    prefix="/api",
+    tags=["search"],
+    dependencies=[Depends(require_roles(ALL_ROLES))],
+)
 REPO = create_search_repo_from_env()
 
 

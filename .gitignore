@@ -21,3 +21,6 @@ __pycache__/
 
 # Runtime artifacts
 .runtime/
+.omc/
+.omx/
+*:Zone.Identifier

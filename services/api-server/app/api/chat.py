@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.services.auth import ALL_ROLES, require_roles
 from app.services.chat_orchestrator import chat_with_citations
 from app.services.search_service import create_search_repo_from_env
 
-router = APIRouter(prefix="/api", tags=["chat"])
+router = APIRouter(
+    prefix="/api",
+    tags=["chat"],
+    dependencies=[Depends(require_roles(ALL_ROLES))],
+)
 REPO = create_search_repo_from_env()
 
 
