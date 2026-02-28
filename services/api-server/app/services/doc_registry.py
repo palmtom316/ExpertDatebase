@@ -38,8 +38,45 @@ class JSONDocRegistry:
 class SQLDocRegistry:
     def __init__(self, database_url: str) -> None:
         self.engine = create_engine(database_url, pool_pre_ping=True)
+        self._schema_ready = False
+
+    def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS documents (
+                        id VARCHAR(64) PRIMARY KEY,
+                        name VARCHAR(512) NOT NULL,
+                        doc_type VARCHAR(64),
+                        created_at TIMESTAMP NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS document_versions (
+                        id VARCHAR(64) PRIMARY KEY,
+                        doc_id VARCHAR(64) NOT NULL REFERENCES documents(id),
+                        version_no INTEGER NOT NULL,
+                        storage_key VARCHAR(1024) NOT NULL,
+                        status VARCHAR(64) NOT NULL,
+                        mineru_json_key VARCHAR(1024),
+                        mineru_md_key VARCHAR(1024),
+                        notes TEXT,
+                        created_at TIMESTAMP NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+            )
+        self._schema_ready = True
 
     def add_document(self, doc: dict[str, Any], version: dict[str, Any]) -> None:
+        self._ensure_schema()
         with self.engine.begin() as conn:
             conn.execute(
                 text(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Protocol
+from uuid import UUID, uuid5, NAMESPACE_URL
 
 import requests
 
@@ -40,15 +41,44 @@ class QdrantHttpRepo:
         self.collection = collection
         self.vector_name = vector_name
         self.timeout_s = timeout_s
+        self._collection_ready = False
 
     def _url(self, suffix: str) -> str:
         return f"{self.endpoint}{suffix}"
 
+    def _ensure_collection(self, vector_size: int) -> None:
+        if self._collection_ready:
+            return
+        body = {
+            "vectors": {
+                self.vector_name: {
+                    "size": int(vector_size),
+                    "distance": "Cosine",
+                }
+            }
+        }
+        resp = requests.put(
+            self._url(f"/collections/{self.collection}"),
+            json=body,
+            timeout=self.timeout_s,
+        )
+        if resp.status_code not in (200, 201, 409):
+            resp.raise_for_status()
+        self._collection_ready = True
+
+    def _normalize_point_id(self, point_id: str) -> str:
+        try:
+            UUID(str(point_id))
+            return str(point_id)
+        except ValueError:
+            return str(uuid5(NAMESPACE_URL, str(point_id)))
+
     def upsert(self, point_id: str, vector: list[float], payload: dict[str, Any]) -> None:
+        self._ensure_collection(len(vector))
         body = {
             "points": [
                 {
-                    "id": point_id,
+                    "id": self._normalize_point_id(point_id),
                     "vector": {self.vector_name: vector},
                     "payload": payload,
                 }

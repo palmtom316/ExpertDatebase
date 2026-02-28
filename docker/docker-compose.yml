@@ -1,11 +1,14 @@
-version: "3.9"
 services:
   api-server:
-    image: expertkb/api-server:latest
+    build:
+      context: ..
+      dockerfile: services/api-server/Dockerfile
+    image: expertkb/api-server:dev
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/expertkb
       - REDIS_URL=redis://redis:6379/0
       - REDIS_QUEUE_NAME=document:process
+      - OBJECT_STORAGE_BACKEND=auto
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=minio
       - MINIO_SECRET_KEY=minio123
@@ -15,21 +18,25 @@ services:
       - QDRANT_VECTOR_NAME=text_embedding
       - DOC_REGISTRY_BACKEND=auto
       - TASK_QUEUE_BACKEND=auto
-      - OBJECT_STORAGE_BACKEND=auto
       - SEARCH_REPO_BACKEND=auto
       - CONFIG_DIR=/configs
     volumes:
       - ../shared/configs:/configs:ro
+      - objectdata:/data/objects
     ports:
       - "8080:8080"
     depends_on: [postgres, redis, minio, qdrant]
 
   worker:
-    image: expertkb/worker:latest
+    build:
+      context: ..
+      dockerfile: services/worker/Dockerfile
+    image: expertkb/worker:dev
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/expertkb
       - REDIS_URL=redis://redis:6379/0
       - REDIS_QUEUE_NAME=document:process
+      - OBJECT_STORAGE_BACKEND=auto
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=minio
       - MINIO_SECRET_KEY=minio123
@@ -38,13 +45,17 @@ services:
       - QDRANT_COLLECTION=chunks_v1
       - QDRANT_VECTOR_NAME=text_embedding
       - VECTORDB_BACKEND=auto
+      - DOC_REGISTRY_PATH=.runtime/registry.json
+      - TASK_QUEUE_BACKEND=auto
       - CONFIG_DIR=/configs
     volumes:
       - ../shared/configs:/configs:ro
+      - objectdata:/data/objects
     depends_on: [postgres, redis, minio, qdrant]
 
   web-ui:
     image: expertkb/web-ui:latest
+    profiles: ["ui"]
     ports:
       - "80:80"
     depends_on: [api-server]
@@ -56,34 +67,28 @@ services:
       - POSTGRES_DB=expertkb
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
 
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "6380:6379"
 
   minio:
-    image: minio/minio:RELEASE.2024-12-18T02-00-34Z
+    image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=minio
       - MINIO_ROOT_PASSWORD=minio123
     volumes:
       - miniodata:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
 
   qdrant:
     image: qdrant/qdrant:v1.10.1
     volumes:
       - qdrantdata:/qdrant/storage
-    ports:
-      - "6333:6333"
 
 volumes:
   pgdata:
-  miniodata:
   qdrantdata:
+  objectdata:
+  miniodata:
