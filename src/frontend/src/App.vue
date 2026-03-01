@@ -53,7 +53,7 @@
     <input ref="pdfInputRef" class="hidden-input" type="file" accept=".pdf,application/pdf" @change="onFileChange" />
 
     <!-- Main Console -->
-    <main class="main-console" @click="collapseCopilotIfNarrow">
+    <main class="main-console">
       <div class="console-header">
         <h2 class="page-title">Workspace 控制台</h2>
       </div>
@@ -82,15 +82,15 @@
     </main>
 
     <CopilotDrawer
-      :collapsed=”copilotCollapsed”
-      :messages=”chatMessages”
-      :sending=”chatSending”
-      :evidence=”reviewEvidence”
-      :evidence-title=”reviewTitle”
-      :evidence-quality=”evidenceQuality”
-      @close=”collapseCopilot”
-      @clear-history=”clearCopilotHistory”
-      @send-chat=”sendChat”
+      :collapsed="copilotCollapsed"
+      :messages="chatMessages"
+      :sending="chatSending"
+      :evidence="reviewEvidence"
+      :evidence-title="reviewTitle"
+      :evidence-quality="evidenceQuality"
+      @close="collapseCopilot"
+      @clear-history="clearCopilotHistory"
+      @send-chat="sendChat"
     />
 
     <SettingsDrawer
@@ -106,34 +106,35 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from “vue”;
-import UploadPanel from “./components/UploadPanel.vue”;
-import DocList from “./components/DocList.vue”;
-import QualityPanel from “./components/QualityPanel.vue”;
-import CopilotDrawer from “./components/CopilotDrawer.vue”;
-import SettingsDrawer from “./components/SettingsDrawer.vue”;
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import UploadPanel from "./components/UploadPanel.vue";
+import DocList from "./components/DocList.vue";
+import QualityPanel from "./components/QualityPanel.vue";
+import CopilotDrawer from "./components/CopilotDrawer.vue";
+import SettingsDrawer from "./components/SettingsDrawer.vue";
+import { isNarrowViewport } from "./utils/copilotVisibility.js";
 
-const API_BASE = (window.EXPERTDB_API_BASE || “”).trim().replace(/\/$/, “”);
-const SETTINGS_KEY = “expertdb_runtime_settings_v1”;
+const API_BASE = (window.EXPERTDB_API_BASE || "").trim().replace(/\/$/, "");
+const SETTINGS_KEY = "expertdb_runtime_settings_v1";
 
-const docTypeOptions = [“规范规程”, “投标文件”, “公司资质”, “公司业绩”, “公司资产”, “人员资质”, “人员业绩”, “优秀标书”];
+const docTypeOptions = ["规范规程", "投标文件", "公司资质", "公司业绩", "公司资产", "人员资质", "人员业绩", "优秀标书"];
 
 const pdfInputRef = ref(null);
 const isUploading = ref(false);
 const chatSending = ref(false);
-const deletingVersionId = ref(“”);
+const deletingVersionId = ref("");
 const sidebarCollapsed = ref(false);
 const copilotCollapsed = ref(true);
 const settingsDrawerOpen = ref(false);
-const uploadMessage = ref(“等待上传 PDF。”);
-const uploadMessageMode = ref(“info”);
+const uploadMessage = ref("等待上传 PDF。");
+const uploadMessageMode = ref("info");
 const docsState = ref([]);
-const docTypeFilter = ref(“all”);
-const selectedUploadDocType = ref(“规范规程”);
-const selectedDocId = ref(“”);
-const selectedDocVersionId = ref(“”);
-const selectedDocDocId = ref(“”);
-const reviewTitle = ref(“在文档列表点击”查看证据”后，内容会显示到这里。”);
+const docTypeFilter = ref("all");
+const selectedUploadDocType = ref("规范规程");
+const selectedDocId = ref("");
+const selectedDocVersionId = ref("");
+const selectedDocDocId = ref("");
+const reviewTitle = ref("在文档列表点击'查看证据'后，内容会显示到这里。");
 const reviewEvidence = ref([]);
 const chatMessages = ref([]);
 
@@ -201,6 +202,7 @@ function toggleCopilot() {
 }
 
 function collapseCopilotIfNarrow() {
+  if (!isNarrowViewport()) return;
   collapseCopilot();
 }
 
@@ -237,7 +239,7 @@ function normalizeDocMatchKey(value) {
   return String(value || "")
     .toLowerCase()
     .replace(/\.pdf$/i, "")
-    .replace(/[\s\-_/\\.,，。:：;；"'“”‘’()（）[\]【】<>《》|]+/g, "")
+    .replace(/[\s\-_/\\.,，。:：;；"'""‘’()（）[\]【】<>《》|]+/g, "")
     .trim();
 }
 
@@ -892,7 +894,7 @@ async function handleDeleteCommand(question) {
   }
   const candidates = findDeleteCandidates(target, candidateDocs);
   if (candidates.length === 0) {
-    pushAssistantMessage(`未找到匹配文档：${target}。可使用“删除 version_id=ver_xxx”精确删除。`);
+    pushAssistantMessage(`未找到匹配文档：${target}。可使用"删除 version_id=ver_xxx"精确删除。`);
     return true;
   }
   if (candidates.length > 1) {
@@ -1079,24 +1081,14 @@ async function sendChat(question) {
 
 function onGlobalKeydown(event) {
   const key = String(event.key || "").toLowerCase();
+  if (key === "escape") {
+    collapseCopilot();
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && key === "j") {
     event.preventDefault();
     toggleCopilot();
   }
-}
-
-function onGlobalPointerDown(event) {
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  if (target.closest(".copilot-dock")) return;
-  collapseCopilot();
-}
-
-function onGlobalFocusIn(event) {
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  if (target.closest(".copilot-dock")) return;
-  collapseCopilot();
 }
 
 onMounted(async () => {
@@ -1107,14 +1099,10 @@ onMounted(async () => {
   }
   pushAssistantMessage("你好，我在右侧栏协助你完成文档调试。快捷键：⌘/Ctrl + J");
   window.addEventListener("keydown", onGlobalKeydown);
-  window.addEventListener("pointerdown", onGlobalPointerDown, true);
-  window.addEventListener("focusin", onGlobalFocusIn, true);
   await Promise.all([loadDocuments(), loadLLMQuality()]);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onGlobalKeydown);
-  window.removeEventListener("pointerdown", onGlobalPointerDown, true);
-  window.removeEventListener("focusin", onGlobalFocusIn, true);
 });
 </script>
