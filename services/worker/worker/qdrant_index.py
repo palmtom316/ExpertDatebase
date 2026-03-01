@@ -8,12 +8,22 @@ import requests
 
 
 DEFAULT_PAYLOAD_INDEXES: list[dict[str, str]] = [
+    {"field_name": "doc_id", "field_schema": "keyword"},
+    {"field_name": "version_id", "field_schema": "keyword"},
     {"field_name": "doc_type", "field_schema": "keyword"},
+    {"field_name": "page_start", "field_schema": "integer"},
+    {"field_name": "page_end", "field_schema": "integer"},
+    {"field_name": "chapter_id", "field_schema": "keyword"},
+    {"field_name": "source_type", "field_schema": "keyword"},
+    {"field_name": "page_type", "field_schema": "keyword"},
     {"field_name": "entity_person_ids", "field_schema": "keyword"},
     {"field_name": "entity_project_ids", "field_schema": "keyword"},
     {"field_name": "entity_equipment_ids", "field_schema": "keyword"},
     {"field_name": "rel_person_role", "field_schema": "keyword"},
     {"field_name": "rel_person_role_project", "field_schema": "keyword"},
+    {"field_name": "clause_no", "field_schema": "keyword"},
+    {"field_name": "standard_no", "field_schema": "keyword"},
+    {"field_name": "certificate_no", "field_schema": "keyword"},
     {"field_name": "val_voltage_kv", "field_schema": "integer"},
     {"field_name": "val_contract_amount_w", "field_schema": "float"},
     {"field_name": "val_line_length_km", "field_schema": "float"},

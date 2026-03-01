@@ -460,7 +460,7 @@ class MinerUClient:
                 f"{base}/parse",
                 headers=self._build_headers(api_key=api_key, token=token),
                 files={"file": ("upload.pdf", pdf_bytes, "application/pdf")},
-                timeout=float(os.getenv("MINERU_HTTP_TIMEOUT_S", "30")),
+                timeout=float(os.getenv("MINERU_HTTP_TIMEOUT_S", "30")),  # nosec B113
             )
             self._raise_for_status_with_body(resp)
             payload = resp.json()

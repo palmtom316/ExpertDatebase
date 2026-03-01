@@ -189,6 +189,13 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     entity_index = rt.entity_index or _EntityIndex()
     upserted = 0
     doc_type = str(job.get("doc_type") or (result.get("classification") or {}).get("doc_type") or "规范规程")
+
+    # Build per-page page_type map from table_struct results
+    table_struct = result.get("table_struct") or {}
+    _power_pages = {int(t.get("page_no") or 0) for t in table_struct.get("power_param_table", [])}
+    _device_pages = {int(t.get("page_no") or 0) for t in table_struct.get("device_inventory_table", [])}
+    _qual_pages = {int(t.get("page_no") or 0) for t in table_struct.get("qualification_table", [])}
+
     for chunk in result["chunks"]:
         chunk_for_payload = {
             **chunk,
@@ -196,14 +203,16 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
             "doc_type": doc_type,
             "text": chunk.get("text", ""),
         }
-        page_type = "other"
-        table_struct = result.get("table_struct") or {}
-        if table_struct.get("power_param_table"):
+        # Determine page_type per-chunk based on the chunk's start page
+        page_start = int(chunk.get("page_start") or 0)
+        if page_start in _power_pages:
             page_type = "power_param_table"
-        elif table_struct.get("device_inventory_table"):
+        elif page_start in _device_pages:
             page_type = "device_inventory_table"
-        elif table_struct.get("qualification_table"):
+        elif page_start in _qual_pages:
             page_type = "qualification_table"
+        else:
+            page_type = "other"
         payload = build_payload(
             chunk=chunk_for_payload,
             ie_assets=ie_assets,

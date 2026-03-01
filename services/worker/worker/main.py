@@ -17,6 +17,14 @@ from worker.queue import build_job_queue_from_env
 from worker.runner import WorkerRuntime, process_document_job
 from worker.storage import build_storage_from_env
 
+try:
+    from shared.logging_config import configure_logging, get_logger
+    configure_logging()
+    _log = get_logger("worker")
+except ImportError:
+    import logging
+    _log = logging.getLogger("worker")  # type: ignore[assignment]
+
 
 def _init_qdrant_indexes() -> None:
     endpoint = os.getenv("VECTORDB_ENDPOINT", "").strip()
@@ -27,7 +35,7 @@ def _init_qdrant_indexes() -> None:
 
     collection = os.getenv("QDRANT_COLLECTION", "chunks_v1")
     result = ensure_payload_indexes(endpoint=endpoint, collection=collection)
-    print("worker qdrant indexes ready", json.dumps(result, ensure_ascii=False))
+    _log.info("qdrant indexes ready", result=result)
 
 
 def run_forever(max_idle_cycles: int | None = None) -> None:
@@ -35,7 +43,7 @@ def run_forever(max_idle_cycles: int | None = None) -> None:
     try:
         _init_qdrant_indexes()
     except Exception as exc:  # noqa: BLE001
-        print("worker qdrant index init failed", str(exc))
+        _log.warning("qdrant index init failed", error=str(exc))
 
     runtime = WorkerRuntime(
         storage=build_storage_from_env(),
@@ -49,26 +57,34 @@ def run_forever(max_idle_cycles: int | None = None) -> None:
 
     idle = 0
     poll_timeout = int(os.getenv("WORKER_POLL_TIMEOUT", "5"))
-    print("worker started")
+    _log.info("worker started", poll_timeout=poll_timeout)
 
     while True:
         job = queue.pop_document_job(timeout_s=poll_timeout)
         if not job:
             idle += 1
             if max_idle_cycles is not None and idle >= max_idle_cycles:
-                print("worker idle max reached, exiting")
+                _log.info("worker idle max reached, exiting")
                 return
             continue
 
         idle = 0
+        version_id = str(job.get("version_id", ""))
+        doc_id = str(job.get("doc_id", ""))
         try:
             summary = process_document_job(job, runtime)
-            print("worker processed", json.dumps({"job": job, "summary": summary}, ensure_ascii=False))
+            _log.info(
+                "document processed",
+                doc_id=doc_id,
+                version_id=version_id,
+                chunks=summary.get("chunks"),
+                upserted=summary.get("upserted"),
+                assets=summary.get("assets_extracted"),
+            )
         except Exception as exc:  # noqa: BLE001
-            version_id = str(job.get("version_id", ""))
             if version_id:
                 runtime.doc_registry.mark_version_status(version_id=version_id, status="failed", notes={"error": str(exc)})
-            print("worker failed", str(exc))
+            _log.error("document processing failed", doc_id=doc_id, version_id=version_id, error=str(exc))
             time.sleep(1)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 
 
 _DEFAULT_PATTERNS = [
@@ -11,6 +12,7 @@ _DEFAULT_PATTERNS = [
     "minio123",
     "changeme",
     "local-dev-key",
+    "changeme_required",
 ]
 
 
@@ -20,9 +22,6 @@ def _is_production() -> bool:
 
 
 def validate_runtime_secrets() -> None:
-    if not _is_production():
-        return
-
     checks = {
         "DATABASE_URL": os.getenv("DATABASE_URL", ""),
         "REDIS_URL": os.getenv("REDIS_URL", ""),
@@ -41,4 +40,11 @@ def validate_runtime_secrets() -> None:
             hits.append(key)
 
     if hits:
-        raise RuntimeError(f"production secrets validation failed for: {', '.join(sorted(hits))}")
+        if _is_production():
+            raise RuntimeError(f"production secrets validation failed for: {', '.join(sorted(hits))}")
+        else:
+            warnings.warn(
+                f"[secrets_guard] Default/placeholder secrets detected for: {', '.join(sorted(hits))}. "
+                "This is UNSAFE for production. Set APP_ENV=production to enforce.",
+                stacklevel=2,
+            )

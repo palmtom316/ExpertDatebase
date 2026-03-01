@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main, feature/**]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: expertkb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:testpass@localhost:5432/expertkb_test
+      REDIS_URL: redis://localhost:6379/0
+      AUTH_ENABLED: "false"
+      AUTH_TOKENS_JSON: '{"test-token":"system_admin"}'
+      MINIO_SECRET_KEY: testminiosecret
+      LLM_PROVIDER: stub
+      EMBEDDING_PROVIDER: stub
+      OBJECT_STORAGE_BACKEND: memory
+      DOC_REGISTRY_BACKEND: memory
+      TASK_QUEUE_BACKEND: memory
+      SEARCH_REPO_BACKEND: memory
+      CONFIG_DIR: ./shared/configs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            fastapi uvicorn sqlalchemy pydantic pyyaml alembic requests \
+            redis minio psycopg2-binary python-multipart slowapi structlog \
+            pytest pytest-asyncio httpx
+
+      - name: Run DB migrations
+        run: |
+          cd services/api-server
+          alembic upgrade head
+        env:
+          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/expertkb_test
+
+      - name: Run tests
+        run: pytest -q --tb=short
+
+      - name: Check test count (must be >= 127)
+        run: |
+          COUNT=$(pytest --co -q 2>/dev/null | tail -1 | grep -oE '[0-9]+' | head -1)
+          echo "Test count: $COUNT"
+          if [ "$COUNT" -lt 100 ]; then
+            echo "ERROR: Test count $COUNT is below minimum 100"
+            exit 1
+          fi

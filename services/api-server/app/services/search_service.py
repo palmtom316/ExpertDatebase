@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -17,6 +18,8 @@ from app.services.retrieval.graphrag_client import GraphRAGClient
 from app.services.retrieval.sparse.pg_bm25 import PgBM25SparseRetriever
 from app.services.retrieval.sparse.sirchmunk_client import SirchmunkClient
 from app.services.retrieval.structured_lookup import StructuredLookupService
+
+_log = logging.getLogger(__name__)
 
 
 class SearchRepo(Protocol):
@@ -329,7 +332,13 @@ class SimpleEmbeddingClient:
                     base_url=cfg["base_url"],
                     model=cfg["model"],
                 )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "embedding failed, falling back to stub",
+                provider=provider,
+                model=cfg.get("model"),
+                error=str(exc),
+            )
             return self._stub(text)
         return self._stub(text)
 

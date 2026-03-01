@@ -8,6 +8,14 @@ from dataclasses import dataclass
 
 import requests
 
+try:
+    from shared.logging_config import configure_logging, get_logger
+    configure_logging()
+    _log = get_logger("scheduler")
+except ImportError:
+    import logging
+    _log = logging.getLogger("scheduler")  # type: ignore[assignment]
+
 
 @dataclass
 class SchedulerConfig:
@@ -58,14 +66,14 @@ def _build_config() -> SchedulerConfig:
 def run_forever() -> None:
     cfg = _build_config()
     scheduler = Scheduler(cfg)
-    print("scheduler started", cfg)
+    _log.info("scheduler started", api_base=cfg.api_base, expiry_interval_s=cfg.expiry_interval_s, eval_interval_s=cfg.eval_interval_s)
     while True:
         try:
             fired = scheduler.tick()
             if fired["expiry_scan"] or fired["eval_schedule"]:
-                print("scheduler tick", fired)
+                _log.info("scheduler tick fired", **fired)
         except Exception as exc:  # noqa: BLE001
-            print("scheduler tick failed", str(exc))
+            _log.error("scheduler tick failed", error=str(exc))
         time.sleep(2)
 
 

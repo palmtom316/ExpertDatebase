@@ -9,12 +9,16 @@ import re
 from typing import Any
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.services.auth import ALL_ROLES, require_roles
 from app.services.doc_registry import DocRegistry, build_doc_registry_from_env
 from app.services.storage import ObjectStorage, build_storage_from_env
 from app.services.task_queue import TaskQueue, build_task_queue_from_env
+
+limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter(
     prefix="/api",
@@ -232,7 +236,9 @@ def list_docs(limit: int | None = None, doc_type: str | None = None) -> dict[str
 
 
 @router.post("/upload", status_code=202)
+@limiter.limit(os.getenv("RATE_LIMIT_UPLOAD", "5/minute"))
 async def upload(
+    request: Request,
     file: UploadFile,
     doc_type: str | None = Form(default=None),
     mineru_api_base: str | None = Form(default=None),
@@ -256,7 +262,26 @@ async def upload(
     vl_model: str | None = Form(default=None),
     vl_base_url: str | None = Form(default=None),
 ) -> dict[str, Any]:
-    content = await file.read()
+    # Pre-check Content-Length header before reading body
+    max_bytes = _upload_max_bytes()
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes * 2:
+                raise HTTPException(status_code=413, detail="file too large")
+        except ValueError:
+            pass
+
+    # Stream read with size cap — avoid loading entire file into memory at once
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in file:
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="file too large")
+        chunks.append(chunk)
+    content = b"".join(chunks)
+
     validate_upload_payload(
         filename=file.filename or "",
         content_type=file.content_type,

@@ -123,7 +123,7 @@ def _test_mineru(payload: dict[str, Any]) -> dict[str, Any]:
                 endpoint,
                 headers=json_headers,
                 json={"files": [{"name": "connectivity_test.pdf", "is_ocr": False}]},
-                timeout=float(os.getenv("MINERU_HTTP_TIMEOUT_S", "30")),
+                timeout=float(os.getenv("MINERU_HTTP_TIMEOUT_S", "30")),  # nosec B113
             )
             _raise_for_status_with_body(resp)
             body = resp.json()
@@ -161,7 +161,7 @@ def _test_mineru(payload: dict[str, Any]) -> dict[str, Any]:
             f"{base}/parse",
             headers=headers,
             files={"file": ("connectivity.pdf", _TEST_PDF_BYTES, "application/pdf")},
-            timeout=float(os.getenv("MINERU_HTTP_TIMEOUT_S", "30")),
+            timeout=float(os.getenv("MINERU_HTTP_TIMEOUT_S", "30")),  # nosec B113
         )
         _raise_for_status_with_body(resp)
     except Exception as exc:  # noqa: BLE001
@@ -266,7 +266,7 @@ def _test_embedding(payload: dict[str, Any]) -> dict[str, Any]:
             f"{base_url}/embeddings",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"model": model, "input": "connectivity-test"},
-            timeout=float(os.getenv("EMBEDDING_HTTP_TIMEOUT_S", "15")),
+            timeout=float(os.getenv("EMBEDDING_HTTP_TIMEOUT_S", "15")),  # nosec B113
         )
         _raise_for_status_with_body(resp)
         data = resp.json()
@@ -318,7 +318,7 @@ def _test_rerank(payload: dict[str, Any]) -> dict[str, Any]:
                 endpoint,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json=payload_json,
-                timeout=float(os.getenv("RERANK_HTTP_TIMEOUT_S", "20")),
+                timeout=float(os.getenv("RERANK_HTTP_TIMEOUT_S", "20")),  # nosec B113
             )
             _raise_for_status_with_body(resp)
             body = resp.json()
@@ -365,7 +365,7 @@ def _test_vl(payload: dict[str, Any]) -> dict[str, Any]:
                 "temperature": 0,
                 "max_tokens": 8,
             },
-            timeout=float(os.getenv("LLM_HTTP_TIMEOUT_S", "30")),
+            timeout=float(os.getenv("LLM_HTTP_TIMEOUT_S", "30")),  # nosec B113
         )
         _raise_for_status_with_body(resp)
         body = resp.json()

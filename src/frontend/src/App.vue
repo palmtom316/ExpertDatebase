@@ -59,444 +59,82 @@
       </div>
       
       <div class="console-grid">
-        <section class="card upload-card" aria-live="polite">
-          <div class="section-head">
-            <h3>上传与任务状态</h3>
-            <button class="btn btn-secondary btn-sm" type="button" @click="retryFailed">重试失败任务</button>
-          </div>
-          <div class="status-message" :data-mode="uploadMessageMode">{{ uploadMessage }}</div>
-          <div class="meta-grid">
-            <div class="meta-item"><span class="meta-label">doc_id</span><span class="meta-value">{{ uploadMeta.docId || "-" }}</span></div>
-            <div class="meta-item"><span class="meta-label">version_id</span><span class="meta-value">{{ uploadMeta.versionId || "-" }}</span></div>
-            <div class="meta-item"><span class="meta-label">object_key</span><span class="meta-value">{{ uploadMeta.objectKey || "-" }}</span></div>
-            <div class="meta-item"><span class="meta-label">状态</span><span class="meta-value">{{ uploadMeta.versionStatus || "-" }}</span></div>
-            <div class="meta-item"><span class="meta-label">分类</span><span class="meta-value">{{ uploadMeta.docType || "-" }}</span></div>
-          </div>
-        </section>
-
-        <section class="card docs-card">
-          <div class="section-head">
-            <h3>文档工作区</h3>
-            <span class="hint">{{ filteredDocs.length }} 条结果</span>
-          </div>
-          <div class="toolbar">
-            <input class="search-input" v-model.trim="searchQuery" placeholder="按文档名或ID检索" @focus="collapseCopilotIfNarrow" />
-            <select class="filter-select" v-model="docTypeFilter" @focus="collapseCopilotIfNarrow">
-              <option value="all">全部分类</option>
-              <option v-for="item in docTypeOptions" :key="item" :value="item">{{ item }}</option>
-            </select>
-            <div class="segments" role="tablist" aria-label="文档过滤">
-              <button
-                v-for="chip in chips"
-                :key="chip.value"
-                class="segment-btn"
-                :class="{ 'is-active': activeFilter === chip.value }"
-                type="button"
-                @click="activeFilter = chip.value; collapseCopilotIfNarrow();"
-              >
-                {{ chip.label }}
-              </button>
-            </div>
-          </div>
-          <div class="table-container">
-            <table class="data-table doc-list">
-               <thead>
-                 <tr>
-                   <th>文档</th>
-                   <th>状态</th>
-                   <th class="text-right">操作</th>
-                 </tr>
-               </thead>
-               <tbody>
-                <tr
-                  v-for="item in filteredDocs"
-                  :key="item.version_id || item.doc_id"
-                  class="doc-row"
-                  :class="{ 'is-selected': selectedDocId === (item.version_id || item.doc_id) }"
-                  @click="selectDocRow(item)"
-                >
-                  <td>
-                    <div class="doc-main">
-                      <div class="doc-title">{{ item.doc_name || "unknown.pdf" }}</div>
-                      <div class="doc-meta">doc={{ item.doc_id || "-" }} · ver={{ item.version_id || "-" }} · 分类={{ item.doc_type || "-" }}</div>
-                    </div>
-                  </td>
-                  <td>
-                    <span class="status-badge" :class="`status-${statusToView(item.status).state}`">
-                      {{ statusToView(item.status).label }}
-                    </span>
-                  </td>
-                  <td>
-                    <div class="doc-actions">
-                      <button class="btn btn-secondary btn-sm" type="button" @click.stop="loadArtifacts(item)">查看证据</button>
-                      <button class="btn btn-ghost btn-sm" type="button" @click.stop="addToEvalDataset(item)">试评</button>
-                      <button class="btn btn-secondary btn-sm" type="button" :disabled="!canReprocess(item)" @click.stop="reprocessDoc(item)">解析</button>
-                      <button class="btn btn-danger btn-sm" type="button" :disabled="deletingVersionId === item.version_id" @click.stop="deleteDoc(item)">
-                        {{ deletingVersionId === item.version_id ? "删除中..." : "删除" }}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-                <tr v-if="filteredDocs.length === 0">
-                   <td colspan="3" class="empty-state">未找到匹配文档</td>
-                </tr>
-               </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="card quality-card">
-          <h3>抽取质量趋势</h3>
-          <div class="quality-metrics">
-            <div class="metric-box"><span class="metric-label">综合等级</span><strong class="metric-value">{{ quality.grade }}</strong></div>
-            <div class="metric-box"><span class="metric-label">综合分</span><strong class="metric-value">{{ quality.score }}</strong></div>
-            <div class="metric-box"><span class="metric-label">样本数</span><strong class="metric-value">{{ quality.count }}</strong></div>
-          </div>
-          <div class="table-container q-table-wrap">
-            <table class="data-table quality-table">
-              <thead>
-                <tr>
-                  <th>Sample ID</th>
-                  <th>Model Provider</th>
-                  <th>Score</th>
-                  <th>Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in quality.rows" :key="row.id || row.sample_id">
-                  <td class="mono-text">{{ row.sample_id || "-" }}</td>
-                  <td>{{ `${row.provider || "-"} / ${row.model || "-"}` }}</td>
-                  <td><span class="score-badge">{{ Math.round(Number(row.score_total || 0)) }}</span></td>
-                  <td class="time-text">{{ row.created_at || "-" }}</td>
-                </tr>
-                <tr v-if="quality.rows.length === 0">
-                   <td colspan="4" class="empty-state">暂无评测记录</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <UploadPanel
+          :upload-message="uploadMessage"
+          :upload-message-mode="uploadMessageMode"
+          :upload-meta="uploadMeta"
+          @retry-failed="retryFailed"
+        />
+        <DocList
+          :docs="docsState"
+          :selected-doc-id="selectedDocId"
+          :deleting-version-id="deletingVersionId"
+          :doc-type-options="docTypeOptions"
+          @select-doc="selectDocRow"
+          @load-artifacts="loadArtifacts"
+          @add-to-eval="addToEvalDataset"
+          @reprocess="reprocessDoc"
+          @delete-doc="deleteDoc"
+          @doc-type-filter-change="onDocTypeFilterChange"
+        />
+        <QualityPanel :quality="quality" />
       </div>
     </main>
 
-    <!-- Slide-out Right Copilot Drawer -->
-    <!-- Dimmer Overlay (Optional, uncomment if you prefer background dimmed when drawer is open) -->
-    <!-- <div class="drawer-overlay" v-if="!copilotCollapsed" @click="collapseCopilot"></div> -->
-    
-    <aside
-      class="copilot-drawer"
-      :class="{ 'is-open': !copilotCollapsed }"
-      aria-label="Copilot Drawer"
-    >
-      <div class="drawer-content">
-        <header class="drawer-header">
-          <div class="drawer-title-group">
-            <div class="copilot-eyebrow">ASSISTANT</div>
-            <h2>AI Copilot</h2>
-          </div>
-          <div class="drawer-actions">
-            <button class="btn btn-ghost btn-sm" type="button" @click="clearCopilotHistory" title="清除历史记录">
-              <svg viewBox="0 0 24 24" fill="none" class="icon-sm" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-            </button>
-            <button class="btn btn-ghost btn-sm" type="button" @click="collapseCopilot" title="收起面板 (Esc)">
-              <svg viewBox="0 0 24 24" fill="none" class="icon-sm" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
-            </button>
-          </div>
-        </header>
+    <CopilotDrawer
+      :collapsed=”copilotCollapsed”
+      :messages=”chatMessages”
+      :sending=”chatSending”
+      :evidence=”reviewEvidence”
+      :evidence-title=”reviewTitle”
+      :evidence-quality=”evidenceQuality”
+      @close=”collapseCopilot”
+      @clear-history=”clearCopilotHistory”
+      @send-chat=”sendChat”
+    />
 
-        <div class="drawer-body">
-          <section class="chat-section">
-            <h3 class="section-subtitle">对话</h3>
-            <div class="chat-timeline">
-              <div v-if="chatMessages.length === 0" class="empty-chat">
-                 你想了解文档的哪些信息？
-              </div>
-              <article
-                v-for="message in chatMessages"
-                :key="message.id"
-                class="chat-bubble"
-                :class="`chat-${message.role}`"
-              >
-                <div class="bubble-content">{{ message.text }}</div>
-                <div v-if="message.meta" class="bubble-meta">{{ message.meta }}</div>
-              </article>
-            </div>
-            <div class="chat-compose">
-              <textarea
-                class="chat-input"
-                v-model.trim="chatQuestion"
-                placeholder="问：例如 合同金额是多少？"
-                :disabled="chatSending"
-                @keydown.enter.prevent="sendChat"
-                rows="2"
-              ></textarea>
-              <button class="btn btn-primary send-btn" type="button" :disabled="chatSending" @click="sendChat">
-                <svg v-if="!chatSending" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
-                <svg v-else class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-              </button>
-            </div>
-          </section>
-
-          <section class="evidence-section">
-            <div class="evidence-header">
-              <h3 class="section-subtitle">引用证据</h3>
-              <span class="evidence-badge" :class="`evidence-badge-${evidenceQuality.level}`">
-                {{ evidenceQuality.label }}
-              </span>
-            </div>
-            <p class="evidence-title-hint">{{ reviewTitle }}</p>
-            <p v-if="evidenceQuality.level === 'low'" class="evidence-warn">
-              证据可读性较低，建议在 API 设置中启用 VL 增强并对该文档执行“重新解析”。
-            </p>
-            <div class="evidence-list-container">
-              <ul class="evidence-list">
-                <li v-for="asset in pagedReviewEvidence" :key="asset.id" class="evidence-card">
-                  <div class="evidence-card-head">
-                    <span class="evidence-type">{{ asset.asset_type || "asset" }}</span>
-                    <span class="evidence-page">第 {{ asset.source_page || 1 }} 页</span>
-                  </div>
-                  <div class="evidence-card-body">
-                    {{ asset.source_excerpt || "" }}
-                  </div>
-                  <div v-if="Number(asset.merged_count || 1) > 1" class="evidence-card-foot">
-                    合并 {{ Number(asset.merged_count) }} 条片段
-                  </div>
-                </li>
-                <li v-if="reviewEvidence.length === 0" class="empty-state">暂无证据资产提取</li>
-              </ul>
-            </div>
-            <div v-if="reviewEvidence.length > EVIDENCE_PAGE_SIZE" class="evidence-pagination">
-              <button class="btn btn-ghost btn-sm" type="button" :disabled="evidencePage <= 1" @click="prevEvidencePage">上一页</button>
-              <span class="page-current">{{ evidencePage }} / {{ evidencePageCount }}</span>
-              <button class="btn btn-ghost btn-sm" type="button" :disabled="evidencePage >= evidencePageCount" @click="nextEvidencePage">下一页</button>
-            </div>
-          </section>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Config Modal (API Settings) -->
-    <div v-if="settingsDrawerOpen" class="modal-overlay" @click.self="settingsDrawerOpen = false">
-      <div class="modal-dialog" role="dialog" aria-modal="true" aria-label="运行时配置">
-        <header class="modal-header">
-          <div>
-            <h2>运行时配置</h2>
-            <p class="hint">全部采用 BYOK：所有模型调用仅使用您填写的 Key。</p>
-          </div>
-          <button class="btn btn-ghost btn-icon" type="button" @click="settingsDrawerOpen = false" aria-label="关闭">
-             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
-          </button>
-        </header>
-
-        <div class="settings-tabs" role="tablist">
-          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'OCR' }" @click="activeSettingsTab = 'OCR'">OCR</button>
-          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'QA' }" @click="activeSettingsTab = 'QA'">QA</button>
-          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'EMBEDDING' }" @click="activeSettingsTab = 'EMBEDDING'">EMBEDDING</button>
-          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'RERANK' }" @click="activeSettingsTab = 'RERANK'">RERANK</button>
-          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'VL' }" @click="activeSettingsTab = 'VL'">VL</button>
-        </div>
-
-        <div class="settings-content">
-          <article v-if="activeSettingsTab === 'OCR'" class="settings-form">
-            <div class="form-header">
-              <h3>MinerU 文档解析</h3>
-            </div>
-            <div class="form-grid">
-              <label class="form-field">
-                <span>MinerU API Base</span>
-                <input v-model.trim="settings.mineru_api_base" placeholder="https://mineru.net/api/v4/extract/task" />
-              </label>
-              <label class="form-field">
-                <span>MinerU API Token</span>
-                <input v-model.trim="settings.mineru_api_key" type="password" placeholder="官网 token" />
-              </label>
-            </div>
-            <div class="form-actions">
-              <button class="btn btn-secondary" type="button" :disabled="mineruConn.loading" @click="testMineruConnectivity">
-                {{ mineruConn.loading ? "CHECKING..." : "API CHECK" }}
-              </button>
-              <span class="conn-badge" :class="connClass(mineruConn.ok)">{{ mineruConn.message }}</span>
-              <div class="spacer"></div>
-              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
-            </div>
-          </article>
-
-          <article v-if="activeSettingsTab === 'QA'" class="settings-form">
-            <div class="form-header"><h3>问答生成模型</h3></div>
-            <div class="form-grid">
-              <label class="form-field">
-                <span>QA Provider</span>
-                <select v-model="settings.llm_provider">
-                  <option value="stub">stub</option>
-                  <option value="openai">openai</option>
-                  <option value="anthropic">anthropic</option>
-                </select>
-              </label>
-              <label class="form-field">
-                <span>QA Model</span>
-                <input v-model.trim="settings.llm_model" placeholder="gpt-4o-mini" />
-              </label>
-              <label class="form-field">
-                <span>QA API Base</span>
-                <input v-model.trim="settings.llm_base_url" placeholder="https://api.openai.com/v1" />
-              </label>
-              <label class="form-field">
-                <span>QA API Key</span>
-                <input v-model.trim="settings.llm_api_key" type="password" placeholder="llm-key" />
-              </label>
-            </div>
-            <div class="form-actions">
-              <button class="btn btn-secondary" type="button" :disabled="llmConn.loading" @click="testLLMConnectivity">
-                {{ llmConn.loading ? "CHECKING..." : "API CHECK" }}
-              </button>
-              <span class="conn-badge" :class="connClass(llmConn.ok)">{{ llmConn.message }}</span>
-              <div class="spacer"></div>
-              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
-            </div>
-          </article>
-
-          <article v-if="activeSettingsTab === 'EMBEDDING'" class="settings-form">
-             <div class="form-header"><h3>向量化模型</h3></div>
-            <div class="form-grid">
-              <label class="form-field">
-                <span>Provider</span>
-                <select v-model="settings.embedding_provider">
-                  <option value="stub">stub</option>
-                  <option value="openai">openai</option>
-                </select>
-              </label>
-              <label class="form-field">
-                <span>Model</span>
-                <input v-model.trim="settings.embedding_model" placeholder="text-embedding-3-small" />
-              </label>
-              <label class="form-field">
-                <span>API Base</span>
-                <input v-model.trim="settings.embedding_base_url" placeholder="https://api.openai.com/v1" />
-              </label>
-              <label class="form-field">
-                <span>API Key</span>
-                <input v-model.trim="settings.embedding_api_key" type="password" placeholder="embedding-key" />
-              </label>
-            </div>
-            <div class="form-actions">
-              <button class="btn btn-secondary" type="button" :disabled="embeddingConn.loading" @click="testEmbeddingConnectivity">
-                {{ embeddingConn.loading ? "CHECKING..." : "API CHECK" }}
-              </button>
-              <span class="conn-badge" :class="connClass(embeddingConn.ok)">{{ embeddingConn.message }}</span>
-              <div class="spacer"></div>
-              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
-            </div>
-          </article>
-
-          <article v-if="activeSettingsTab === 'RERANK'" class="settings-form">
-            <div class="form-header"><h3>重排模型 (可选)</h3></div>
-            <div class="form-grid">
-              <label class="form-field">
-                <span>Provider</span>
-                <select v-model="settings.rerank_provider">
-                  <option value="stub">stub</option>
-                  <option value="openai">openai</option>
-                  <option value="local">local</option>
-                </select>
-              </label>
-              <label class="form-field">
-                <span>Model</span>
-                <input v-model.trim="settings.rerank_model" placeholder="BAAI/bge-reranker-v2-m3" />
-              </label>
-              <label class="form-field">
-                <span>API Base</span>
-                <input v-model.trim="settings.rerank_base_url" placeholder="https://api.openai.com/v1" />
-              </label>
-              <label class="form-field">
-                <span>API Key</span>
-                <input v-model.trim="settings.rerank_api_key" type="password" placeholder="rerank-key" />
-              </label>
-            </div>
-            <div class="form-actions">
-              <button class="btn btn-secondary" type="button" :disabled="rerankConn.loading" @click="testRerankConnectivity">
-                 {{ rerankConn.loading ? "CHECKING..." : "API CHECK" }}
-              </button>
-              <span class="conn-badge" :class="connClass(rerankConn.ok)">{{ rerankConn.message }}</span>
-              <div class="spacer"></div>
-              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
-            </div>
-          </article>
-
-          <article v-if="activeSettingsTab === 'VL'" class="settings-form">
-            <div class="form-header"><h3>图像/表格识别 (可选)</h3></div>
-            <div class="form-grid">
-              <label class="form-field">
-                <span>Provider</span>
-                <select v-model="settings.vl_provider">
-                  <option value="stub">stub</option>
-                  <option value="openai">openai</option>
-                </select>
-              </label>
-              <label class="form-field">
-                <span>Model</span>
-                <input v-model.trim="settings.vl_model" placeholder="gpt-4o-mini" />
-              </label>
-              <label class="form-field">
-                <span>API Base</span>
-                <input v-model.trim="settings.vl_base_url" placeholder="https://api.openai.com/v1" />
-              </label>
-              <label class="form-field">
-                <span>API Key</span>
-                <input v-model.trim="settings.vl_api_key" type="password" placeholder="vl-key" />
-              </label>
-            </div>
-            <div class="form-actions">
-              <button class="btn btn-secondary" type="button" :disabled="vlConn.loading" @click="testVLConnectivity">
-                {{ vlConn.loading ? "CHECKING..." : "API CHECK" }}
-              </button>
-              <span class="conn-badge" :class="connClass(vlConn.ok)">{{ vlConn.message }}</span>
-              <div class="spacer"></div>
-              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
-            </div>
-          </article>
-        </div>
-      </div>
-    </div>
+    <SettingsDrawer
+      :open="settingsDrawerOpen"
+      :model-value="settings"
+      :conn-state="connState"
+      @close="settingsDrawerOpen = false"
+      @update:model-value="applySettings"
+      @save="saveSettings"
+      @test-conn="onTestConn"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from “vue”;
+import UploadPanel from “./components/UploadPanel.vue”;
+import DocList from “./components/DocList.vue”;
+import QualityPanel from “./components/QualityPanel.vue”;
+import CopilotDrawer from “./components/CopilotDrawer.vue”;
+import SettingsDrawer from “./components/SettingsDrawer.vue”;
 
-const API_BASE = (window.EXPERTDB_API_BASE || "").trim().replace(/\/$/, "");
-const SETTINGS_KEY = "expertdb_runtime_settings_v1";
+const API_BASE = (window.EXPERTDB_API_BASE || “”).trim().replace(/\/$/, “”);
+const SETTINGS_KEY = “expertdb_runtime_settings_v1”;
 
-const chips = [
-  { value: "all", label: "全部" },
-  { value: "indexed", label: "已索引" },
-  { value: "processing", label: "处理中" },
-  { value: "review", label: "失败/复核" },
-];
-const docTypeOptions = ["规范规程", "投标文件", "公司资质", "公司业绩", "公司资产", "人员资质", "人员业绩", "优秀标书"];
+const docTypeOptions = [“规范规程”, “投标文件”, “公司资质”, “公司业绩”, “公司资产”, “人员资质”, “人员业绩”, “优秀标书”];
 
 const pdfInputRef = ref(null);
 const isUploading = ref(false);
 const chatSending = ref(false);
-const deletingVersionId = ref("");
+const deletingVersionId = ref(“”);
 const sidebarCollapsed = ref(false);
 const copilotCollapsed = ref(true);
 const settingsDrawerOpen = ref(false);
-const activeSettingsTab = ref("OCR");
-const settingsStatus = ref("尚未保存");
-const uploadMessage = ref("等待上传 PDF。");
-const uploadMessageMode = ref("info");
+const uploadMessage = ref(“等待上传 PDF。”);
+const uploadMessageMode = ref(“info”);
 const docsState = ref([]);
-const activeFilter = ref("all");
-const docTypeFilter = ref("all");
-const selectedUploadDocType = ref("规范规程");
-const searchQuery = ref("");
-const selectedDocId = ref("");
-const selectedDocVersionId = ref("");
-const selectedDocDocId = ref("");
-const reviewTitle = ref("在文档列表点击“查看证据”后，内容会显示到这里。");
+const docTypeFilter = ref(“all”);
+const selectedUploadDocType = ref(“规范规程”);
+const selectedDocId = ref(“”);
+const selectedDocVersionId = ref(“”);
+const selectedDocDocId = ref(“”);
+const reviewTitle = ref(“在文档列表点击”查看证据”后，内容会显示到这里。”);
 const reviewEvidence = ref([]);
-const evidencePage = ref(1);
-const chatQuestion = ref("");
 const chatMessages = ref([]);
 
 const uploadMeta = reactive({
@@ -543,7 +181,6 @@ const vlConn = reactive({ loading: false, ok: null, message: "未测试" });
 
 let pollToken = 0;
 let messageSeq = 0;
-const EVIDENCE_PAGE_SIZE = 8;
 const EVIDENCE_MAX_ITEMS = 80;
 
 function nextMessageId() {
@@ -571,7 +208,6 @@ function clearCopilotHistory() {
   chatMessages.value = [];
   reviewEvidence.value = [];
   reviewTitle.value = "历史对话已清除。";
-  evidencePage.value = 1;
   pushAssistantMessage("历史对话与引用证据已清除。");
 }
 
@@ -584,21 +220,12 @@ function pushAssistantMessage(text, meta = "") {
   chatMessages.value.push({ id: nextMessageId(), role: "assistant", text, meta });
 }
 
-function statusToView(status) {
-  const normalized = String(status || "").toLowerCase();
-  if (normalized === "processed") return { state: "indexed", label: "已索引" };
-  if (["processing", "uploaded", "retry_queued"].includes(normalized)) return { state: "processing", label: "处理中" };
-  if (["failed", "failed_archived"].includes(normalized)) return { state: "review", label: "失败/复核" };
-  return { state: "review", label: status || "未知" };
-}
-
-function canReprocess(item) {
+function canReprocessItem(item) {
   const status = String(item?.status || "").toLowerCase();
   return !["processing", "uploaded", "retry_queued"].includes(status);
 }
 
-function normalizeText(value) {
-  const raw = String(value || "");
+function normalizeText(value) {  const raw = String(value || "");
   const cleaned = raw
     .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
@@ -847,14 +474,7 @@ function collectSettings() {
 
 function saveSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(collectSettings()));
-  settingsStatus.value = "已保存并生效";
   pushAssistantMessage("运行时配置已保存。");
-}
-
-function connClass(ok) {
-  if (ok === true) return "conn-ok";
-  if (ok === false) return "conn-fail";
-  return "";
 }
 
 async function runConnectivityTest(target, state) {
@@ -952,24 +572,6 @@ async function testVLConnectivity() {
   await runConnectivityTest("vl", vlConn);
 }
 
-const filteredDocs = computed(() => {
-  const query = searchQuery.value.toLowerCase();
-  return docsState.value.filter((item) => {
-    const state = statusToView(item.status).state;
-    if (activeFilter.value !== "all" && state !== activeFilter.value) return false;
-    const rowType = String(item.doc_type || "").trim();
-    if (docTypeFilter.value !== "all" && rowType !== docTypeFilter.value) return false;
-    const raw = `${item.doc_name || ""} ${item.doc_id || ""} ${item.version_id || ""}`.toLowerCase();
-    return raw.includes(query);
-  });
-});
-
-const evidencePageCount = computed(() => Math.max(1, Math.ceil(reviewEvidence.value.length / EVIDENCE_PAGE_SIZE)));
-const pagedReviewEvidence = computed(() => {
-  const page = Math.min(evidencePage.value, evidencePageCount.value);
-  const start = (page - 1) * EVIDENCE_PAGE_SIZE;
-  return reviewEvidence.value.slice(start, start + EVIDENCE_PAGE_SIZE);
-});
 const evidenceQuality = computed(() => {
   if (reviewEvidence.value.length === 0) {
     return { level: "empty", label: "待加载", score: 0 };
@@ -989,33 +591,29 @@ const evidenceQuality = computed(() => {
   return { level: "low", label: "低可读", score: avg };
 });
 
-function prevEvidencePage() {
-  evidencePage.value = Math.max(1, evidencePage.value - 1);
+const connState = computed(() => ({
+  mineru: mineruConn,
+  llm: llmConn,
+  embedding: embeddingConn,
+  rerank: rerankConn,
+  vl: vlConn,
+}));
+
+function onTestConn(target) {
+  const handlers = {
+    mineru: testMineruConnectivity,
+    llm: testLLMConnectivity,
+    embedding: testEmbeddingConnectivity,
+    rerank: testRerankConnectivity,
+    vl: testVLConnectivity,
+  };
+  handlers[target]?.();
 }
 
-function nextEvidencePage() {
-  evidencePage.value = Math.min(evidencePageCount.value, evidencePage.value + 1);
+async function onDocTypeFilterChange(val) {
+  docTypeFilter.value = val;
+  await loadDocuments();
 }
-
-watch(
-  () => reviewEvidence.value.length,
-  () => {
-    if (reviewEvidence.value.length === 0) {
-      evidencePage.value = 1;
-      return;
-    }
-    if (evidencePage.value > evidencePageCount.value) {
-      evidencePage.value = evidencePageCount.value;
-    }
-  }
-);
-
-watch(
-  () => docTypeFilter.value,
-  async () => {
-    await loadDocuments();
-  }
-);
 
 function syncUploadMetaFromDocs(items) {
   const currentVersionId = String(uploadMeta.versionId || "");
@@ -1052,7 +650,6 @@ function selectDocRow(item) {
 async function loadArtifacts(item) {
   reviewTitle.value = `证据 - ${item.doc_name || item.version_id}`;
   reviewEvidence.value = [];
-  evidencePage.value = 1;
   selectedDocId.value = item.version_id || item.doc_id || "";
   selectedDocVersionId.value = item.version_id || "";
   selectedDocDocId.value = item.doc_id || "";
@@ -1172,7 +769,7 @@ async function retryFailed() {
 }
 
 async function reprocessDoc(item) {
-  if (!item?.version_id || !canReprocess(item)) return;
+  if (!item?.version_id || !canReprocessItem(item)) return;
   const runtime = collectSettings();
   if (!runtime.mineru_api_base || !runtime.mineru_api_key) {
     setUploadMessage("请先在 API 设置中填写 MinerU API Base 与 MinerU API Token", "error");
@@ -1252,7 +849,6 @@ async function deleteDoc(item, options = {}) {
       selectedDocDocId.value = "";
       reviewEvidence.value = [];
       reviewTitle.value = "文档已删除，请重新选择文档。";
-      evidencePage.value = 1;
     }
     if (String(uploadMeta.versionId || "") === versionId) {
       uploadMeta.docId = "-";
@@ -1426,8 +1022,7 @@ async function uploadPdf(file) {
   }
 }
 
-async function sendChat() {
-  const question = chatQuestion.value.trim();
+async function sendChat(question) {
   if (!question || chatSending.value) return;
 
   const runtime = collectSettings();
@@ -1437,7 +1032,6 @@ async function sendChat() {
     text: question,
     meta: "You",
   });
-  chatQuestion.value = "";
   chatSending.value = true;
   expandCopilot();
 

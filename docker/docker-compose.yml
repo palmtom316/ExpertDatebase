@@ -5,13 +5,13 @@ services:
       dockerfile: services/api-server/Dockerfile
     image: expertkb/api-server:dev
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/expertkb
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-changeme_required}@postgres:5432/expertkb
       - REDIS_URL=redis://redis:6379/0
       - REDIS_QUEUE_NAME=document:process
       - OBJECT_STORAGE_BACKEND=auto
       - MINIO_ENDPOINT=http://minio:9000
-      - MINIO_ACCESS_KEY=minio
-      - MINIO_SECRET_KEY=minio123
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
       - MINIO_BUCKET=expertkb
       - VECTORDB_ENDPOINT=http://qdrant:6333
       - QDRANT_COLLECTION=chunks_v1
@@ -21,8 +21,8 @@ services:
       - SEARCH_REPO_BACKEND=auto
       - CONFIG_DIR=/configs
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-http://localhost:5500,http://127.0.0.1:5500}
-      - AUTH_ENABLED=${AUTH_ENABLED:-false}
-      - AUTH_TOKENS_JSON=${AUTH_TOKENS_JSON:-}
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
+      - AUTH_TOKENS_JSON=${AUTH_TOKENS_JSON:?AUTH_TOKENS_JSON is required}
       - UPLOAD_MAX_MB=${UPLOAD_MAX_MB:-50}
       - LLM_PROVIDER=${LLM_PROVIDER:-auto}
       - LLM_HTTP_TIMEOUT_S=${LLM_HTTP_TIMEOUT_S:-30}
@@ -40,7 +40,15 @@ services:
       - objectdata:/data/objects
     ports:
       - "8080:8080"
-    depends_on: [postgres, redis, minio, qdrant]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3).read()"]
       interval: 15s
@@ -53,13 +61,13 @@ services:
       dockerfile: services/worker/Dockerfile
     image: expertkb/worker:dev
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/expertkb
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-changeme_required}@postgres:5432/expertkb
       - REDIS_URL=redis://redis:6379/0
       - REDIS_QUEUE_NAME=document:process
       - OBJECT_STORAGE_BACKEND=auto
       - MINIO_ENDPOINT=http://minio:9000
-      - MINIO_ACCESS_KEY=minio
-      - MINIO_SECRET_KEY=minio123
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
       - MINIO_BUCKET=expertkb
       - VECTORDB_ENDPOINT=http://qdrant:6333
       - QDRANT_COLLECTION=chunks_v1
@@ -71,9 +79,17 @@ services:
     volumes:
       - ../shared/configs:/configs:ro
       - objectdata:/data/objects
-    depends_on: [postgres, redis, minio, qdrant]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "print('ok')"]
+      test: ["CMD", "python", "-c", "import redis,os; r=redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0')); r.ping()"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -87,9 +103,11 @@ services:
       - SCHEDULER_API_BASE=http://api-server:8080
       - SCHEDULER_EXPIRY_INTERVAL_S=${SCHEDULER_EXPIRY_INTERVAL_S:-300}
       - SCHEDULER_EVAL_INTERVAL_S=${SCHEDULER_EVAL_INTERVAL_S:-900}
-    depends_on: [api-server]
+    depends_on:
+      api-server:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "print('ok')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://api-server:8080/health', timeout=3).read()"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -107,22 +125,32 @@ services:
   postgres:
     image: postgres:16
     environment:
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - POSTGRES_DB=expertkb
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d expertkb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7
     ports:
       - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   minio:
     image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
-      - MINIO_ROOT_USER=minio
-      - MINIO_ROOT_PASSWORD=minio123
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
     volumes:
       - miniodata:/data
 
@@ -130,6 +158,11 @@ services:
     image: qdrant/qdrant:v1.10.1
     volumes:
       - qdrantdata:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/readyz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
 volumes:
   pgdata:

@@ -71,17 +71,35 @@ class LLMRouter:
         if configured in {"openai", "anthropic", "stub"}:
             return [configured], meta
 
+        # "auto" mode: try runtime BYOK first, then tier env vars, then stub
         candidates: list[str] = []
+
+        # Runtime BYOK key takes priority regardless of tier config
+        if str(runtime.get("llm_api_key") or "").strip():
+            byok_provider = configured if configured in {"openai", "anthropic"} else "openai"
+            candidates.append(byok_provider)
+
         for tier in tiers:
             tier_name = str(tier_map.get(tier, "")).strip()
-            env_key = f"LLM_TIER_PROVIDER_{tier_name}" if tier_name else ""
-            mapped = os.getenv(env_key, "").strip().lower() if env_key else ""
+            # Try both "LLM_TIER_PROVIDER_CN_PRIMARY" style and generic "LLM_PROVIDER_TIER1"
+            env_candidates = []
+            if tier_name:
+                env_candidates.append(f"LLM_TIER_PROVIDER_{tier_name.upper()}")
+            env_candidates.append(f"LLM_PROVIDER_{str(tier).upper()}")
 
-            provider = mapped
-            if provider not in {"openai", "anthropic", "stub"}:
-                provider = "stub"
+            provider = ""
+            for env_key in env_candidates:
+                provider = os.getenv(env_key, "").strip().lower()
+                if provider in {"openai", "anthropic"}:
+                    break
 
-            if provider not in candidates:
+            if provider not in {"openai", "anthropic"}:
+                # Fall back to global LLM_PROVIDER if set explicitly
+                global_prov = os.getenv("LLM_PROVIDER", "").strip().lower()
+                if global_prov in {"openai", "anthropic"}:
+                    provider = global_prov
+
+            if provider in {"openai", "anthropic"} and provider not in candidates:
                 candidates.append(provider)
 
         if "stub" not in candidates:
@@ -242,7 +260,8 @@ class LLMRouter:
         result: dict[str, Any] | None = None
 
         semaphore = self.__class__._global_semaphore
-        assert semaphore is not None
+        if semaphore is None:
+            raise RuntimeError("LLMRouter semaphore not initialized")
 
         with semaphore:
             for provider in providers:
