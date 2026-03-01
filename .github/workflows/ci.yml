@@ -63,6 +63,7 @@ jobs:
           pip install \
             fastapi uvicorn sqlalchemy pydantic pyyaml alembic requests \
             redis minio psycopg2-binary python-multipart slowapi structlog \
+            qdrant-client asyncpg \
             pytest pytest-asyncio httpx
 
       - name: Run DB migrations
