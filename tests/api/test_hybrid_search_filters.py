@@ -24,13 +24,15 @@ class DummyEntityIndex:
 
 class TestHybridSearchFilters(unittest.TestCase):
     def test_parse_filter_spec_builds_must_filters(self) -> None:
-        f, _ = parse_filter_spec("张建国项目经理110kV且合同金额5000万", DummyEntityIndex())
+        f, sparse_query, dense_query = parse_filter_spec("张建国项目经理110kV且合同金额5000万", DummyEntityIndex())
         self.assertIsNotNone(f)
         keys = {x["key"] for x in f["must"]}
         self.assertIn("val_voltage_kv", keys)
         self.assertIn("val_contract_amount_w", keys)
         self.assertIn("entity_person_ids", keys)
         self.assertIn("rel_person_role", keys)
+        self.assertIn("张建国", sparse_query)
+        self.assertIn("110kV", dense_query)
 
     def test_hybrid_search_returns_citations(self) -> None:
         repo = InMemoryQdrantRepo()

@@ -34,6 +34,13 @@ def _clean_block_text(text: str) -> str:
     return s
 
 
+def _clean_table_text(text: str) -> str:
+    s = str(text or "")
+    s = "".join(ch for ch in s if ch in ("\n", "\t") or ord(ch) >= 32)
+    lines = [re.sub(r"\s+", " ", line).strip() for line in s.splitlines() if line.strip()]
+    return "\n".join(lines).strip()
+
+
 def _signature_for_repeat(text: str) -> str:
     s = _clean_block_text(text).lower()
     s = re.sub(r"\d+", "", s)
@@ -45,6 +52,8 @@ def _is_low_quality_block(text: str) -> bool:
     s = _clean_block_text(text)
     if not s:
         return True
+    if "|" in s and re.search(r"[A-Za-z0-9\u4e00-\u9fff]", s):
+        return False
     lower = s.lower()
     if "%pdf-" in lower or "endstream" in lower:
         return True
@@ -116,7 +125,7 @@ def normalize_result(mineru_result: dict[str, Any]) -> tuple[list[dict[str, Any]
             )
 
         for idx, table in enumerate(page.get("tables", []), start=1):
-            raw_text = _clean_block_text(table.get("raw_text", ""))
+            raw_text = _clean_table_text(table.get("raw_text", ""))
             if _is_low_quality_block(raw_text):
                 continue
             tables.append(

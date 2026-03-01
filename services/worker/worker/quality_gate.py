@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -75,20 +76,22 @@ def filter_chunks_for_indexing(chunks: list[dict[str, Any]]) -> tuple[list[dict[
     dropped_noise = 0
     dropped_short = 0
     dropped_dup = 0
+    min_chars = max(10, int(os.getenv("QUALITY_GATE_MIN_CHARS", "100")))
 
     for chunk in chunks:
         text = str((chunk or {}).get("text") or "").strip()
         normalized = re.sub(r"\s+", " ", text)
         signature = re.sub(r"[\s\W_]+", "", normalized.lower())
+        is_table_row = str((chunk or {}).get("source_type") or "").strip() == "table_row" or str((chunk or {}).get("chunk_id") or "").startswith("tbl_")
         if signature and signature in seen:
             dropped_dup += 1
             continue
 
-        if _looks_noisy_chunk(text):
+        if not is_table_row and _looks_noisy_chunk(text):
             dropped_noise += 1
             continue
 
-        if len(normalized) < 100 and not _has_evidence_signal(normalized):
+        if not is_table_row and len(normalized) < min_chars and not _has_evidence_signal(normalized):
             dropped_short += 1
             continue
 

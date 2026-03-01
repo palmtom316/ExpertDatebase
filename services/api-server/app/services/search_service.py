@@ -13,6 +13,10 @@ from uuid import UUID, uuid5, NAMESPACE_URL
 import requests
 
 from app.services.filter_parser import parse_filter_spec
+from app.services.retrieval.graphrag_client import GraphRAGClient
+from app.services.retrieval.sparse.pg_bm25 import PgBM25SparseRetriever
+from app.services.retrieval.sparse.sirchmunk_client import SirchmunkClient
+from app.services.retrieval.structured_lookup import StructuredLookupService
 
 
 class SearchRepo(Protocol):
@@ -597,11 +601,65 @@ def _merge_filters(
 def _to_citation(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "doc_name": payload.get("doc_name", ""),
+        "doc_id": payload.get("doc_id", ""),
         "page_start": payload.get("page_start"),
         "page_end": payload.get("page_end"),
         "excerpt": payload.get("excerpt", ""),
         "chunk_text": payload.get("chunk_text", ""),
+        "route": payload.get("route", "dense"),
     }
+
+
+def _env_enabled(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw not in {"0", "false", "no", "off", ""}
+
+
+def _route_hit_id(route: str, doc_id: str, page_no: int, excerpt: str) -> str:
+    digest = hashlib.sha256(f"{route}|{doc_id}|{page_no}|{excerpt}".encode("utf-8")).hexdigest()[:12]
+    return f"{route}:{doc_id}:{page_no}:{digest}"
+
+
+def _normalize_route_hits(items: list[dict[str, Any]], route: str) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        doc_id = str(item.get("doc_id") or "").strip()
+        page_no = int(item.get("page_no") or 0)
+        excerpt = str(item.get("excerpt") or item.get("chunk_text") or "").strip()
+        if not doc_id or page_no <= 0:
+            continue
+        doc_name = str(item.get("doc_name") or "").strip()
+        hit_id = _route_hit_id(route=route, doc_id=doc_id, page_no=page_no, excerpt=excerpt)
+        payload = {
+            "doc_id": doc_id,
+            "doc_name": doc_name,
+            "page_start": page_no,
+            "page_end": page_no,
+            "excerpt": excerpt,
+            "chunk_text": str(item.get("chunk_text") or excerpt),
+            "route": route,
+            "source_path": str(item.get("source_path") or ""),
+        }
+        hits.append({"id": hit_id, "score": float(item.get("score") or 0.0), "payload": payload})
+    return hits
+
+
+def _should_trigger_graphrag(question: str, current_hits: list[dict[str, Any]]) -> bool:
+    q = str(question or "")
+    if not q:
+        return False
+    connector_count = sum(1 for token in ["同时", "并且", "且", "分别", "关系", "关联", "and", "or"] if token in q)
+    condition_count = len(re.findall(r"\d{1,2}(?:\.\d+){1,4}", q))
+    condition_count += len(re.findall(r"[A-Z]{1,6}(?:-[A-Z0-9]{1,10}){2,}", q))
+    if connector_count >= 1 and condition_count >= 1:
+        return True
+    if connector_count >= 2:
+        return True
+    if len(current_hits) < 3:
+        return True
+    return False
 
 
 def create_search_repo_from_env() -> SearchRepo:
@@ -630,26 +688,94 @@ def hybrid_search(
     runtime_config: dict[str, Any] | None = None,
     search_filter: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    parsed_filter, vector_query_text = parse_filter_spec(question, entity_index)
+    parsed_filter, sparse_query, dense_query_text = parse_filter_spec(question, entity_index)
     filter_json = _merge_filters(parsed_filter, search_filter)
-    query_vector = SimpleEmbeddingClient().embed_text(vector_query_text, runtime_config=runtime_config)
+    query_vector = SimpleEmbeddingClient().embed_text(dense_query_text, runtime_config=runtime_config)
     vector_top_k = max(top_k, int(os.getenv("HYBRID_VECTOR_TOP_K", "24")))
     keyword_top_k = max(top_k, int(os.getenv("HYBRID_KEYWORD_TOP_K", "24")))
     fused_limit = max(top_k * 2, int(os.getenv("HYBRID_FUSED_TOP_K", "40")))
+    sparse_top_k = max(top_k, int(os.getenv("HYBRID_SPARSE_TOP_K", "24")))
+    structured_top_k = max(top_k, int(os.getenv("HYBRID_STRUCTURED_TOP_K", "24")))
 
     vector_hits = repo.search(query_vector=query_vector, filter_json=filter_json, limit=vector_top_k)
+    for hit in vector_hits:
+        payload = (hit or {}).get("payload")
+        if isinstance(payload, dict):
+            payload.setdefault("route", "dense")
+
     keyword_hits: list[dict[str, Any]] = []
-    if str(os.getenv("HYBRID_KEYWORD_ENABLED", "1")).strip() not in {"0", "false", "False"}:
+    if _env_enabled("HYBRID_KEYWORD_ENABLED", default=True):
         try:
             keyword_hits = repo.keyword_search(query_text=question, filter_json=filter_json, limit=keyword_top_k)
+            for hit in keyword_hits:
+                payload = (hit or {}).get("payload")
+                if isinstance(payload, dict):
+                    payload.setdefault("route", "keyword")
         except Exception:  # noqa: BLE001
             keyword_hits = []
 
+    route_lists: list[list[dict[str, Any]]] = [vector_hits]
+    route_counts: dict[str, int] = {"dense": len(vector_hits), "keyword": len(keyword_hits)}
+    degraded_routes: dict[str, str] = {}
+
     if keyword_hits:
-        hits = _fuse_rrf([vector_hits, keyword_hits], limit=fused_limit)
-    else:
-        hits = vector_hits
-    hits = RuntimeRerankClient().rerank_hits(question=question, hits=hits, runtime_config=runtime_config)
+        route_lists.append(keyword_hits)
+
+    sparse_candidates: list[dict[str, Any]] = []
+    if _env_enabled("ENABLE_PG_BM25", default=False):
+        try:
+            sparse_candidates.extend(
+                PgBM25SparseRetriever().search(query_text=sparse_query, top_n=sparse_top_k, filters=filter_json)
+            )
+        except Exception as exc:  # noqa: BLE001
+            degraded_routes["pg_bm25"] = str(exc)
+
+    if _env_enabled("ENABLE_SIRCHMUNK", default=False):
+        try:
+            sparse_candidates.extend(SirchmunkClient().search(query_text=sparse_query, top_n=sparse_top_k))
+        except Exception as exc:  # noqa: BLE001
+            degraded_routes["sparse"] = str(exc)
+
+    sparse_hits = _normalize_route_hits(sparse_candidates, route="sparse")
+    if sparse_hits:
+        route_lists.append(sparse_hits)
+    route_counts["sparse"] = len(sparse_hits)
+
+    structured_hits: list[dict[str, Any]] = []
+    if _env_enabled("ENABLE_STRUCTURED_LOOKUP", default=False):
+        try:
+            structured_hits = _normalize_route_hits(
+                StructuredLookupService().lookup(question=question, top_n=structured_top_k),
+                route="structured",
+            )
+        except Exception as exc:  # noqa: BLE001
+            degraded_routes["structured"] = str(exc)
+            structured_hits = []
+    if structured_hits:
+        route_lists.append(structured_hits)
+    route_counts["structured"] = len(structured_hits)
+
+    pre_graphrag_hits = _fuse_rrf(route_lists, limit=fused_limit)
+    graphrag_hits: list[dict[str, Any]] = []
+    if _env_enabled("ENABLE_YOUTU_GRAPHRAG", default=False) and _should_trigger_graphrag(
+        question=question,
+        current_hits=pre_graphrag_hits,
+    ):
+        try:
+            graphrag_hits = _normalize_route_hits(
+                GraphRAGClient().search(question=question, top_n=structured_top_k),
+                route="graphrag",
+            )
+        except Exception as exc:  # noqa: BLE001
+            degraded_routes["graphrag"] = str(exc)
+            graphrag_hits = []
+    if graphrag_hits:
+        route_lists.append(graphrag_hits)
+    route_counts["graphrag"] = len(graphrag_hits)
+
+    hits = _fuse_rrf(route_lists, limit=fused_limit)
+    if _env_enabled("ENABLE_RERANK", default=True):
+        hits = RuntimeRerankClient().rerank_hits(question=question, hits=hits, runtime_config=runtime_config)
     hits = hits[:top_k]
 
     citations = [_to_citation((h or {}).get("payload", {})) for h in hits]
@@ -657,4 +783,8 @@ def hybrid_search(
         "hits": hits,
         "citations": citations,
         "filter_json": filter_json,
+        "debug": {
+            "route_counts": route_counts,
+            "degraded_routes": degraded_routes,
+        },
     }

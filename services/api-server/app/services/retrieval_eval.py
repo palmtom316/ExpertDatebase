@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 
 
@@ -85,8 +86,11 @@ def evaluate_retrieval_samples(
             "query_count": 0,
             "hit_at_5": 0.0,
             "hit_at_10": 0.0,
+            "evidence_hit_rate_at_10": 0.0,
             "mrr": 0.0,
             "details": [],
+            "failed_samples": [],
+            "release_gate": {"passed": False, "reason": "empty dataset"},
         }
 
     top_k = max(1, int(top_k))
@@ -94,6 +98,8 @@ def evaluate_retrieval_samples(
     hit5 = 0
     hit10 = 0
     rr_sum = 0.0
+    evidence_hit10 = 0
+    failed_samples: list[dict[str, Any]] = []
 
     for sample in samples:
         hits = search_fn(sample)
@@ -102,8 +108,11 @@ def evaluate_retrieval_samples(
             hit5 += 1
         if rank is not None and rank <= 10:
             hit10 += 1
+            evidence_hit10 += 1
         if rank is not None:
             rr_sum += 1.0 / rank
+        else:
+            failed_samples.append({"query": str(sample.get("query") or ""), "expected": sample})
 
         details.append(
             {
@@ -114,10 +123,36 @@ def evaluate_retrieval_samples(
         )
 
     count = len(samples)
+    hit_at_10 = hit10 / count
+    mrr = rr_sum / count
+    evidence_hit_rate_at_10 = evidence_hit10 / count
+    min_queries = max(1, int(os.getenv("EVAL_MIN_QUERIES", "30")))
+    min_hit10 = float(os.getenv("EVAL_MIN_HIT10", "0.75"))
+    min_mrr = float(os.getenv("EVAL_MIN_MRR", "0.45"))
+    min_evidence = float(os.getenv("EVAL_MIN_EVIDENCE_HIT10", "0.80"))
+    gate_passed = (
+        count >= min_queries
+        and hit_at_10 >= min_hit10
+        and mrr >= min_mrr
+        and evidence_hit_rate_at_10 >= min_evidence
+    )
+    gate_reason = "ok" if gate_passed else "metrics or sample count below threshold"
     return {
         "query_count": count,
         "hit_at_5": hit5 / count,
-        "hit_at_10": hit10 / count,
-        "mrr": rr_sum / count,
+        "hit_at_10": hit_at_10,
+        "evidence_hit_rate_at_10": evidence_hit_rate_at_10,
+        "mrr": mrr,
         "details": details,
+        "failed_samples": failed_samples,
+        "release_gate": {
+            "passed": gate_passed,
+            "reason": gate_reason,
+            "thresholds": {
+                "min_queries": min_queries,
+                "min_hit_at_10": min_hit10,
+                "min_mrr": min_mrr,
+                "min_evidence_hit_rate_at_10": min_evidence,
+            },
+        },
     }

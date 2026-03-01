@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import uuid5, NAMESPACE_DNS
 
@@ -84,6 +86,50 @@ def _mineru_pages_to_markdown(mineru_result: dict[str, Any]) -> str:
     return "\n\n".join(out).strip()
 
 
+def _export_sparse_sidecar_pages(mineru_result: dict[str, Any], doc_id: str) -> dict[str, Any]:
+    root = Path(os.getenv("SPARSE_SIDECAR_DOCS_ROOT", "/data/docs"))
+    target_dir = root / doc_id
+    pages = mineru_result.get("pages") if isinstance(mineru_result, dict) else []
+    if not isinstance(pages, list):
+        return {"enabled": False, "reason": "invalid pages"}
+
+    written = 0
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            page_no = int(page.get("page_no") or 0)
+            if page_no <= 0:
+                continue
+            lines: list[str] = []
+            blocks = page.get("blocks") or []
+            tables = page.get("tables") or []
+            if isinstance(blocks, list):
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    text = str(block.get("text") or "").strip()
+                    if text:
+                        lines.append(text)
+            if isinstance(tables, list):
+                for table in tables:
+                    if not isinstance(table, dict):
+                        continue
+                    text = str(table.get("raw_text") or "").strip()
+                    if text:
+                        lines.append(text)
+            if not lines:
+                continue
+            file_path = target_dir / f"page_{page_no:03d}.txt"
+            file_path.write_text("\n".join(lines), encoding="utf-8")
+            written += 1
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": False, "reason": str(exc), "root": str(target_dir)}
+
+    return {"enabled": True, "root": str(target_dir), "pages_written": written}
+
+
 def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, Any]:
     doc_id = str(job["doc_id"])
     version_id = str(job["version_id"])
@@ -101,6 +147,7 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     visual_candidates = extract_visual_candidates(mineru_result)
     vl_result = VLRecognizer().enhance(visual_candidates, runtime_config=runtime_config)
     mineru_result = merge_visual_text_into_mineru(mineru_result, vl_result.get("items") or [])
+    sparse_sidecar = _export_sparse_sidecar_pages(mineru_result=mineru_result, doc_id=doc_id)
     mineru_json_key = f"mineru/{doc_id}/{version_id}/mineru.pages.json"
     mineru_md_key = f"mineru/{doc_id}/{version_id}/mineru.pages.md"
     artifact_keys: dict[str, str] = {}
@@ -118,12 +165,16 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
 
     result = process_mineru_result(doc_id=doc_id, version_id=version_id, mineru_result=mineru_result)
 
+    ie_engine = str(runtime_config.get("ie_engine") or "").strip().lower()
+    if not ie_engine:
+        ie_engine = "langextract" if str(os.getenv("ENABLE_LANGEXTRACT", "0")).strip() in {"1", "true", "True"} else "custom"
     ie_assets: list[dict[str, Any]] = []
     for chapter in result["chapters"]:
         ie_assets.extend(
             extract_assets_from_chapter(
                 text=str(chapter.get("text", "")),
                 page_no=int(chapter.get("start_page", 0) or 0),
+                engine=ie_engine,
             )
         )
 
@@ -187,6 +238,8 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
             "chunks": len(result.get("chunks", [])),
         },
         "chunk_filter_stats": result.get("chunk_filter_stats") or {},
+        "ie_engine": ie_engine,
+        "sparse_sidecar": sparse_sidecar,
         "visual_enhancement": {
             "candidate_count": len(visual_candidates),
             "enhanced_count": len(vl_result.get("items") or []),

@@ -77,6 +77,33 @@ def infer_capacity_mva(ie_assets: list[dict[str, Any]], text: str) -> float | No
     return None
 
 
+def infer_clause_no(text: str) -> str | None:
+    m = re.search(r"\b(\d{1,2}(?:\.\d+){1,4})\b", str(text or ""))
+    return m.group(1) if m else None
+
+
+def infer_standard_no(ie_assets: list[dict[str, Any]], text: str) -> str | None:
+    for a in ie_assets:
+        name = (a.get("data_json") or {}).get("standard_name")
+        if name:
+            return str(name).strip().upper()
+    m = re.search(
+        r"(?<![A-Za-z0-9])((?:GB|DL/T|DL|NB/T|IEC|ISO)\s*[-A-Z]*\s*\d{2,6}(?:-\d{4})?)(?![A-Za-z0-9])",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    )
+    return m.group(1).upper().strip() if m else None
+
+
+def infer_certificate_no(ie_assets: list[dict[str, Any]], text: str) -> str | None:
+    for a in ie_assets:
+        cert = (a.get("data_json") or {}).get("certificate")
+        if cert:
+            return str(cert).strip().upper()
+    m = re.search(r"(?<![A-Z0-9])([A-Z]{1,6}(?:-[A-Z0-9]{1,10}){2,})(?![A-Z0-9])", str(text or ""))
+    return m.group(1).upper().strip() if m else None
+
+
 def build_payload(
     chunk: dict[str, Any],
     ie_assets: list[dict[str, Any]],
@@ -136,5 +163,8 @@ def build_payload(
     payload["val_contract_amount_w"] = infer_amount_wan(ie_assets, chunk.get("text", ""))
     payload["val_line_length_km"] = infer_line_km(ie_assets, chunk.get("text", ""))
     payload["val_capacity_mva"] = infer_capacity_mva(ie_assets, chunk.get("text", ""))
+    payload["clause_no"] = infer_clause_no(chunk.get("text", ""))
+    payload["standard_no"] = infer_standard_no(ie_assets, chunk.get("text", ""))
+    payload["certificate_no"] = infer_certificate_no(ie_assets, chunk.get("text", ""))
 
     return payload

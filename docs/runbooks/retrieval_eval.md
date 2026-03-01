@@ -40,12 +40,17 @@
 .venv/bin/python services/api-server/scripts/eval_retrieval.py \
   --dataset /path/to/retrieval_eval.jsonl \
   --top-k 10 \
-  --output outputs/retrieval_eval.latest.json
+  --output outputs/retrieval_eval.latest.json \
+  --report outputs/retrieval_eval.report.json
 ```
 
 ## 3. 输出指标
 
 - `hit_at_5`: 前 5 条命中率
 - `hit_at_10`: 前 10 条命中率
+- `evidence_hit_rate_at_10`: Top10 证据命中率
 - `mrr`: 平均倒数排名（越高越好）
 - `details`: 每条 query 的首个相关命中排名 `rank` 和 top1 样本
+- `failed_samples`: 未命中的失败样本集合
+- `release_gate`: 切流量门禁结论（阈值与通过状态）
+- `allow_traffic`: `release_gate.passed` 的布尔镜像，用于流水线判定

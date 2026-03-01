@@ -43,6 +43,7 @@ def main() -> int:
     parser.add_argument("--dataset", required=True, help="Path to JSONL dataset.")
     parser.add_argument("--top-k", type=int, default=10, help="Max hits per query (default: 10).")
     parser.add_argument("--output", default="", help="Optional output JSON path.")
+    parser.add_argument("--report", default="", help="Optional report JSON path (for gate checks).")
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset).expanduser().resolve()
@@ -80,15 +81,19 @@ def main() -> int:
 
     result = evaluate_retrieval_samples(samples=samples, search_fn=_search, top_k=top_k)
     result["dataset"] = str(dataset_path)
+    result["allow_traffic"] = bool((result.get("release_gate") or {}).get("passed"))
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if args.output:
         out_path = Path(args.output).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.report:
+        report_path = Path(args.report).expanduser().resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

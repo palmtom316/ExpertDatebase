@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
+
+from worker.ie.engines.langextract_engine import LangExtractEngine
+from worker.ie.grounding.page_offset_mapper import PageOffsetMapper
 
 
 def _find(pattern: str, text: str) -> str | None:
@@ -149,7 +153,7 @@ def _find_standard(text: str) -> str | None:
     return _find(r"(?:执行标准|标准编号|标准)[:：\s]*([^\n]+)", text)
 
 
-def extract_assets_from_chapter(text: str, page_no: int) -> list[dict[str, Any]]:
+def _extract_assets_custom(text: str, page_no: int) -> list[dict[str, Any]]:
     project_name = _find(r"(?:项目名称|工程名称)[:：\s]*([^\n]+)", text)
     owner_unit = _find(r"(?:业主单位|建设单位|发包人)[:：\s]*([^\n]+)", text)
     sign_date = _find(r"(?:签订日期|合同签订|签约日期)[:：\s]*([0-9]{4}[-/.年][0-9]{1,2}[-/.月][0-9]{1,2})", text)
@@ -272,3 +276,108 @@ def extract_assets_from_chapter(text: str, page_no: int) -> list[dict[str, Any]]
         )
 
     return assets
+
+
+def _extract_assets_langextract(text: str, page_no: int) -> list[dict[str, Any]]:
+    mapper = PageOffsetMapper.from_pages([{"page_no": page_no, "text": text}])
+    result = LangExtractEngine().extract(text=text, mapper=mapper)
+    fields = result.get("fields") or {}
+    if not isinstance(fields, dict) or not fields:
+        return []
+
+    amount_wan = (((fields.get("amount_wan") or {}).get("value")) if isinstance(fields.get("amount_wan"), dict) else None)
+    amount_rmb = float(amount_wan) * 10000 if amount_wan is not None else None
+    voltage = (((fields.get("voltage_kv") or {}).get("value")) if isinstance(fields.get("voltage_kv"), dict) else None)
+    standard_no = (((fields.get("standard_no") or {}).get("value")) if isinstance(fields.get("standard_no"), dict) else None)
+    certificate_no = (((fields.get("certificate_no") or {}).get("value")) if isinstance(fields.get("certificate_no"), dict) else None)
+    person_name = (((fields.get("person_name") or {}).get("value")) if isinstance(fields.get("person_name"), dict) else None)
+    clause_no = (((fields.get("clause_no") or {}).get("value")) if isinstance(fields.get("clause_no"), dict) else None)
+
+    excerpt = _build_readable_excerpt(text, limit=220)
+    assets: list[dict[str, Any]] = [
+        {
+            "asset_type": "project",
+            "data_json": {
+                "project_name": None,
+                "owner_unit": None,
+                "contract_sign_date": None,
+                "contract_amount_original": None,
+                "contract_amount_rmb": amount_rmb,
+                "voltage_level_kv": voltage,
+                "substation_capacity_mva": None,
+                "line_length_km": None,
+                "transformer_capacity_mva": None,
+                "cable_type": None,
+                "certificate_no": certificate_no,
+                "standard_no": standard_no,
+                "clause_no": clause_no,
+                "validation": result.get("validation") or [],
+            },
+            "source_page": page_no,
+            "source_excerpt": excerpt,
+            "source_type": "chapter_text",
+            "block_id": None,
+            "table_id": None,
+            "row_index": None,
+        }
+    ]
+    if person_name:
+        assets.append(
+            {
+                "asset_type": "person",
+                "data_json": {
+                    "name": person_name,
+                    "role": _find_role(text),
+                    "project_name": None,
+                    "certificate_no": certificate_no,
+                },
+                "source_page": page_no,
+                "source_excerpt": excerpt,
+                "source_type": "chapter_text",
+                "block_id": None,
+                "table_id": None,
+                "row_index": None,
+            }
+        )
+    if standard_no:
+        assets.append(
+            {
+                "asset_type": "standard",
+                "data_json": {"standard_name": standard_no},
+                "source_page": page_no,
+                "source_excerpt": excerpt,
+                "source_type": "chapter_text",
+                "block_id": None,
+                "table_id": None,
+                "row_index": None,
+            }
+        )
+    if certificate_no:
+        assets.append(
+            {
+                "asset_type": "qualification",
+                "data_json": {"person_name": person_name, "certificate": certificate_no},
+                "source_page": page_no,
+                "source_excerpt": excerpt,
+                "source_type": "chapter_text",
+                "block_id": None,
+                "table_id": None,
+                "row_index": None,
+            }
+        )
+    return assets
+
+
+def extract_assets_from_chapter(
+    text: str,
+    page_no: int,
+    engine: str = "custom",
+) -> list[dict[str, Any]]:
+    selected_engine = str(engine or "").strip().lower()
+    if not selected_engine:
+        selected_engine = "langextract" if os.getenv("ENABLE_LANGEXTRACT", "0").strip() in {"1", "true", "True"} else "custom"
+    if selected_engine == "langextract":
+        lang_assets = _extract_assets_langextract(text=text, page_no=page_no)
+        if lang_assets:
+            return lang_assets
+    return _extract_assets_custom(text=text, page_no=page_no)
