@@ -236,7 +236,38 @@ def test_unknown_target_returns_validation_message() -> None:
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["ok"] is False
-    assert "target 必须是 mineru、llm、embedding 或 rerank" in payload["message"]
+    assert "target 必须是 mineru、llm、embedding、rerank 或 vl" in payload["message"]
+
+
+def test_vl_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict = {}
+
+    def fake_post(url: str, headers: dict, json: dict, timeout: float, **kwargs):
+        called["url"] = url
+        called["headers"] = headers
+        called["json"] = json
+        return _DummyResponse(status_code=200, payload={"choices": [{"message": {"content": "OK"}}]})
+
+    monkeypatch.setattr("app.api.admin_connectivity.requests.post", fake_post)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/admin/connectivity/test",
+        json={
+            "target": "vl",
+            "vl_provider": "openai",
+            "vl_api_key": "vl-key",
+            "vl_model": "gpt-4o-mini",
+            "vl_base_url": "https://runtime-openai.test/v1",
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["target"] == "vl"
+    assert called["url"] == "https://runtime-openai.test/v1/chat/completions"
+    assert called["headers"]["Authorization"] == "Bearer vl-key"
 
 
 def test_llm_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None:

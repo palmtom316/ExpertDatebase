@@ -342,6 +342,50 @@ def _test_rerank(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _test_vl(payload: dict[str, Any]) -> dict[str, Any]:
+    provider = _s(payload, "vl_provider").lower() or "stub"
+    api_key = _normalize_token(_s(payload, "vl_api_key") or _s(payload, "llm_api_key"))
+    model = _s(payload, "vl_model") or "gpt-4o-mini"
+    base_url = (_s(payload, "vl_base_url") or _s(payload, "llm_base_url") or "https://api.openai.com/v1").rstrip("/")
+
+    if provider == "stub":
+        return _ok(target="vl", message="VL 联通成功(stub)", detail={"provider": "stub"})
+    if provider != "openai":
+        return _fail(target="vl", message=f"vl_provider 不支持: {provider}", detail={"provider": provider})
+    if not api_key:
+        return _fail(target="vl", message="vl_api_key 不能为空", detail={"provider": provider})
+
+    try:
+        resp = requests.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "connectivity test: reply OK"}],
+                "temperature": 0,
+                "max_tokens": 8,
+            },
+            timeout=float(os.getenv("LLM_HTTP_TIMEOUT_S", "30")),
+        )
+        _raise_for_status_with_body(resp)
+        body = resp.json()
+        content = (((body.get("choices") or [{}])[0]).get("message") or {}).get("content")
+        if not str(content or "").strip():
+            raise RuntimeError("empty vl completion response")
+    except Exception as exc:  # noqa: BLE001
+        return _fail(
+            target="vl",
+            message=f"VL 联通失败: {exc}",
+            detail={"provider": provider, "model": model, "base_url": base_url},
+        )
+
+    return _ok(
+        target="vl",
+        message="VL 联通成功",
+        detail={"provider": provider, "model": model, "base_url": base_url},
+    )
+
+
 @router.post("/test")
 def test_connectivity(payload: dict | None = None) -> dict[str, Any]:
     req: dict[str, Any] = payload or {}
@@ -354,4 +398,6 @@ def test_connectivity(payload: dict | None = None) -> dict[str, Any]:
         return _test_embedding(req)
     if target == "rerank":
         return _test_rerank(req)
-    return _fail(target="unknown", message="target 必须是 mineru、llm、embedding 或 rerank")
+    if target == "vl":
+        return _test_vl(req)
+    return _fail(target="unknown", message="target 必须是 mineru、llm、embedding、rerank 或 vl")

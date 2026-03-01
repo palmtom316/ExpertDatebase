@@ -1,50 +1,87 @@
 <template>
-  <div>
-    <div class="bg-layer bg-layer-a" aria-hidden="true"></div>
-    <div class="bg-layer bg-layer-b" aria-hidden="true"></div>
+  <div class="app-layout" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+    <!-- Collapsible Left Sidebar -->
+    <aside class="sidebar" :aria-expanded="!sidebarCollapsed">
+      <div class="sidebar-header">
+        <div class="brand">
+          <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+          <h1 class="brand-title" v-if="!sidebarCollapsed">BidExpert</h1>
+        </div>
+        <button class="btn btn-ghost toggle-btn" @click="sidebarCollapsed = !sidebarCollapsed" aria-label="Toggle Sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <path v-if="sidebarCollapsed" stroke-linecap="round" stroke-linejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+            <path v-else stroke-linecap="round" stroke-linejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+          </svg>
+        </button>
+      </div>
 
-    <header class="shell topbar">
-      <div>
-        <p class="top-eyebrow">ExpertDatebase</p>
-        <h1>上线测试控制台</h1>
-      </div>
-      <div class="top-actions">
-        <label class="top-select">
-          分类
-          <select v-model="selectedUploadDocType">
-            <option v-for="item in docTypeOptions" :key="item" :value="item">{{ item }}</option>
-          </select>
-        </label>
-        <button class="btn btn-primary" type="button" :disabled="isUploading" @click="triggerUpload">上传 PDF</button>
-        <button class="btn btn-primary" type="button" @click="startEvalRun">启动评测</button>
-        <button class="btn btn-secondary" type="button" @click="settingsDrawerOpen = true">API 设置</button>
-      </div>
-    </header>
+      <nav class="sidebar-nav">
+        <!-- Navigation actions grouped -->
+        <div class="nav-group">
+          <label class="nav-label" v-if="!sidebarCollapsed">分类设置</label>
+          <div class="nav-field" :class="{'is-collapsed': sidebarCollapsed}">
+             <select v-model="selectedUploadDocType" class="nav-select">
+              <option v-for="item in docTypeOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+            <span class="nav-icon-only" v-if="sidebarCollapsed" title="文档分类">📁</span>
+          </div>
+        </div>
+        
+        <div class="nav-actions">
+           <button class="nav-btn btn-primary" type="button" :disabled="isUploading" @click="triggerUpload">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="nav-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+             <span v-if="!sidebarCollapsed">上传 PDF</span>
+           </button>
+           <button class="nav-btn btn-secondary" type="button" @click="startEvalRun">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="nav-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+             <span v-if="!sidebarCollapsed">启动评测</span>
+           </button>
+           <button class="nav-btn btn-ghost" type="button" @click="settingsDrawerOpen = true">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="nav-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+             <span v-if="!sidebarCollapsed">API 设置</span>
+           </button>
+           <button class="nav-btn btn-primary copilot-trigger" type="button" @click="toggleCopilot">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="nav-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+             <span v-if="!sidebarCollapsed">Copilot (⌘J)</span>
+           </button>
+        </div>
+      </nav>
+    </aside>
 
     <input ref="pdfInputRef" class="hidden-input" type="file" accept=".pdf,application/pdf" @change="onFileChange" />
 
-    <main class="shell cockpit-layout">
-      <section class="workspace-main" @click="collapseCopilotIfNarrow">
+    <!-- Main Console -->
+    <main class="main-console" @click="collapseCopilotIfNarrow">
+      <div class="console-header">
+        <h2 class="page-title">Workspace 控制台</h2>
+      </div>
+      
+      <div class="console-grid">
         <section class="card upload-card" aria-live="polite">
           <div class="section-head">
-            <h2>上传与任务状态</h2>
-            <button class="btn btn-secondary" type="button" @click="retryFailed">重试失败任务</button>
+            <h3>上传与任务状态</h3>
+            <button class="btn btn-secondary btn-sm" type="button" @click="retryFailed">重试失败任务</button>
           </div>
-          <p class="status-message" :data-mode="uploadMessageMode">{{ uploadMessage }}</p>
+          <div class="status-message" :data-mode="uploadMessageMode">{{ uploadMessage }}</div>
           <div class="meta-grid">
-            <p><b>doc_id</b> <span>{{ uploadMeta.docId || "-" }}</span></p>
-            <p><b>version_id</b> <span>{{ uploadMeta.versionId || "-" }}</span></p>
-            <p><b>object_key</b> <span>{{ uploadMeta.objectKey || "-" }}</span></p>
-            <p><b>状态</b> <span>{{ uploadMeta.versionStatus || "-" }}</span></p>
-            <p><b>分类</b> <span>{{ uploadMeta.docType || "-" }}</span></p>
+            <div class="meta-item"><span class="meta-label">doc_id</span><span class="meta-value">{{ uploadMeta.docId || "-" }}</span></div>
+            <div class="meta-item"><span class="meta-label">version_id</span><span class="meta-value">{{ uploadMeta.versionId || "-" }}</span></div>
+            <div class="meta-item"><span class="meta-label">object_key</span><span class="meta-value">{{ uploadMeta.objectKey || "-" }}</span></div>
+            <div class="meta-item"><span class="meta-label">状态</span><span class="meta-value">{{ uploadMeta.versionStatus || "-" }}</span></div>
+            <div class="meta-item"><span class="meta-label">分类</span><span class="meta-value">{{ uploadMeta.docType || "-" }}</span></div>
           </div>
         </section>
 
         <section class="card docs-card">
-          <h2>文档工作区</h2>
+          <div class="section-head">
+            <h3>文档工作区</h3>
+            <span class="hint">{{ filteredDocs.length }} 条结果</span>
+          </div>
           <div class="toolbar">
-            <input v-model.trim="searchQuery" placeholder="按文档名或ID检索" @focus="collapseCopilotIfNarrow" />
-            <select v-model="docTypeFilter" @focus="collapseCopilotIfNarrow">
+            <input class="search-input" v-model.trim="searchQuery" placeholder="按文档名或ID检索" @focus="collapseCopilotIfNarrow" />
+            <select class="filter-select" v-model="docTypeFilter" @focus="collapseCopilotIfNarrow">
               <option value="all">全部分类</option>
               <option v-for="item in docTypeOptions" :key="item" :value="item">{{ item }}</option>
             </select>
@@ -55,316 +92,370 @@
                 class="segment-btn"
                 :class="{ 'is-active': activeFilter === chip.value }"
                 type="button"
-                @click="
-                  activeFilter = chip.value;
-                  collapseCopilotIfNarrow();
-                "
+                @click="activeFilter = chip.value; collapseCopilotIfNarrow();"
               >
                 {{ chip.label }}
               </button>
             </div>
           </div>
-          <p class="hint">{{ filteredDocs.length }} 条结果</p>
-          <ul class="doc-list">
-            <li
-              v-for="item in filteredDocs"
-              :key="item.version_id || item.doc_id"
-              class="doc-row"
-              :class="{ 'is-selected': selectedDocId === (item.version_id || item.doc_id) }"
-              @click="selectDocRow(item)"
-            >
-              <div class="doc-main">
-                <h3>{{ item.doc_name || "unknown.pdf" }}</h3>
-                <p>doc={{ item.doc_id || "-" }} · ver={{ item.version_id || "-" }} · 分类={{ item.doc_type || "-" }}</p>
-              </div>
-              <span class="status" :class="`status-${statusToView(item.status).state}`">
-                {{ statusToView(item.status).label }}
-              </span>
-              <div class="doc-actions">
-                <button class="btn btn-secondary" type="button" @click.stop="loadArtifacts(item)">查看证据</button>
-                <button class="btn btn-ghost" type="button" @click.stop="addToEvalDataset(item)">加入评测集</button>
-                <button class="btn btn-secondary" type="button" :disabled="!canReprocess(item)" @click.stop="reprocessDoc(item)">
-                  重新解析
-                </button>
-                <button
-                  class="btn btn-danger"
-                  type="button"
-                  :disabled="deletingVersionId === item.version_id"
-                  @click.stop="deleteDoc(item)"
+          <div class="table-container">
+            <table class="data-table doc-list">
+               <thead>
+                 <tr>
+                   <th>文档</th>
+                   <th>状态</th>
+                   <th class="text-right">操作</th>
+                 </tr>
+               </thead>
+               <tbody>
+                <tr
+                  v-for="item in filteredDocs"
+                  :key="item.version_id || item.doc_id"
+                  class="doc-row"
+                  :class="{ 'is-selected': selectedDocId === (item.version_id || item.doc_id) }"
+                  @click="selectDocRow(item)"
                 >
-                  {{ deletingVersionId === item.version_id ? "删除中..." : "删除" }}
-                </button>
-              </div>
-            </li>
-          </ul>
+                  <td>
+                    <div class="doc-main">
+                      <div class="doc-title">{{ item.doc_name || "unknown.pdf" }}</div>
+                      <div class="doc-meta">doc={{ item.doc_id || "-" }} · ver={{ item.version_id || "-" }} · 分类={{ item.doc_type || "-" }}</div>
+                    </div>
+                  </td>
+                  <td>
+                    <span class="status-badge" :class="`status-${statusToView(item.status).state}`">
+                      {{ statusToView(item.status).label }}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="doc-actions">
+                      <button class="btn btn-secondary btn-sm" type="button" @click.stop="loadArtifacts(item)">查看证据</button>
+                      <button class="btn btn-ghost btn-sm" type="button" @click.stop="addToEvalDataset(item)">试评</button>
+                      <button class="btn btn-secondary btn-sm" type="button" :disabled="!canReprocess(item)" @click.stop="reprocessDoc(item)">解析</button>
+                      <button class="btn btn-danger btn-sm" type="button" :disabled="deletingVersionId === item.version_id" @click.stop="deleteDoc(item)">
+                        {{ deletingVersionId === item.version_id ? "删除中..." : "删除" }}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="filteredDocs.length === 0">
+                   <td colspan="3" class="empty-state">未找到匹配文档</td>
+                </tr>
+               </tbody>
+            </table>
+          </div>
         </section>
 
         <section class="card quality-card">
-          <h2>抽取质量趋势</h2>
+          <h3>抽取质量趋势</h3>
           <div class="quality-metrics">
-            <div><span>综合等级</span><strong>{{ quality.grade }}</strong></div>
-            <div><span>综合分</span><strong>{{ quality.score }}</strong></div>
-            <div><span>样本数</span><strong>{{ quality.count }}</strong></div>
+            <div class="metric-box"><span class="metric-label">综合等级</span><strong class="metric-value">{{ quality.grade }}</strong></div>
+            <div class="metric-box"><span class="metric-label">综合分</span><strong class="metric-value">{{ quality.score }}</strong></div>
+            <div class="metric-box"><span class="metric-label">样本数</span><strong class="metric-value">{{ quality.count }}</strong></div>
           </div>
-          <div class="quality-table-wrap">
-            <table class="quality-table">
+          <div class="table-container q-table-wrap">
+            <table class="data-table quality-table">
               <thead>
                 <tr>
-                  <th>sample_id</th>
-                  <th>provider/model</th>
-                  <th>score</th>
-                  <th>时间</th>
+                  <th>Sample ID</th>
+                  <th>Model Provider</th>
+                  <th>Score</th>
+                  <th>Time</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="row in quality.rows" :key="row.id || row.sample_id">
-                  <td>{{ row.sample_id || "-" }}</td>
+                  <td class="mono-text">{{ row.sample_id || "-" }}</td>
                   <td>{{ `${row.provider || "-"} / ${row.model || "-"}` }}</td>
-                  <td>{{ Math.round(Number(row.score_total || 0)) }}</td>
-                  <td>{{ row.created_at || "-" }}</td>
+                  <td><span class="score-badge">{{ Math.round(Number(row.score_total || 0)) }}</span></td>
+                  <td class="time-text">{{ row.created_at || "-" }}</td>
+                </tr>
+                <tr v-if="quality.rows.length === 0">
+                   <td colspan="4" class="empty-state">暂无评测记录</td>
                 </tr>
               </tbody>
             </table>
           </div>
         </section>
-      </section>
+      </div>
     </main>
 
+    <!-- Slide-out Right Copilot Drawer -->
+    <!-- Dimmer Overlay (Optional, uncomment if you prefer background dimmed when drawer is open) -->
+    <!-- <div class="drawer-overlay" v-if="!copilotCollapsed" @click="collapseCopilot"></div> -->
+    
     <aside
-      class="copilot-dock group transition-all duration-300"
-      :class="{ 'is-collapsed': copilotCollapsed }"
-      aria-label="Copilot 侧边栏"
+      class="copilot-drawer"
+      :class="{ 'is-open': !copilotCollapsed }"
+      aria-label="Copilot Drawer"
     >
-      <button
-        class="copilot-rail opacity-85 transition-all duration-300 group-hover:opacity-100"
-        type="button"
-        @click="toggleCopilot"
-        aria-label="切换 Copilot"
-      >
-        <span>COPILOT</span>
-      </button>
-
-      <section class="copilot-panel opacity-90 transition-all duration-300 group-hover:opacity-100">
-        <header class="copilot-head">
-          <div>
-            <p class="copilot-eyebrow">ASSISTANT</p>
-            <h2>Copilot</h2>
+      <div class="drawer-content">
+        <header class="drawer-header">
+          <div class="drawer-title-group">
+            <div class="copilot-eyebrow">ASSISTANT</div>
+            <h2>AI Copilot</h2>
           </div>
-          <div class="copilot-head-actions">
-            <button class="segment-btn" type="button" @click="clearCopilotHistory">清除</button>
-            <button class="segment-btn" type="button" @click="collapseCopilot">收起</button>
+          <div class="drawer-actions">
+            <button class="btn btn-ghost btn-sm" type="button" @click="clearCopilotHistory" title="清除历史记录">
+              <svg viewBox="0 0 24 24" fill="none" class="icon-sm" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </button>
+            <button class="btn btn-ghost btn-sm" type="button" @click="collapseCopilot" title="收起面板 (Esc)">
+              <svg viewBox="0 0 24 24" fill="none" class="icon-sm" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
           </div>
         </header>
 
-        <div class="copilot-body">
+        <div class="drawer-body">
           <section class="chat-section">
-            <h3>对话</h3>
+            <h3 class="section-subtitle">对话</h3>
             <div class="chat-timeline">
+              <div v-if="chatMessages.length === 0" class="empty-chat">
+                 你想了解文档的哪些信息？
+              </div>
               <article
                 v-for="message in chatMessages"
                 :key="message.id"
                 class="chat-bubble"
                 :class="`chat-${message.role}`"
               >
-                <p>{{ message.text }}</p>
-                <small v-if="message.meta">{{ message.meta }}</small>
+                <div class="bubble-content">{{ message.text }}</div>
+                <div v-if="message.meta" class="bubble-meta">{{ message.meta }}</div>
               </article>
             </div>
             <div class="chat-compose">
-              <input
+              <textarea
+                class="chat-input"
                 v-model.trim="chatQuestion"
                 placeholder="问：例如 合同金额是多少？"
                 :disabled="chatSending"
-                @keyup.enter="sendChat"
-              />
-              <button class="btn btn-primary" type="button" :disabled="chatSending" @click="sendChat">
-                {{ chatSending ? "发送中..." : "发送" }}
+                @keydown.enter.prevent="sendChat"
+                rows="2"
+              ></textarea>
+              <button class="btn btn-primary send-btn" type="button" :disabled="chatSending" @click="sendChat">
+                <svg v-if="!chatSending" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+                <svg v-else class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
               </button>
             </div>
           </section>
 
           <section class="evidence-section">
-            <div class="evidence-head">
-              <h3>引用证据</h3>
+            <div class="evidence-header">
+              <h3 class="section-subtitle">引用证据</h3>
               <span class="evidence-badge" :class="`evidence-badge-${evidenceQuality.level}`">
                 {{ evidenceQuality.label }}
               </span>
             </div>
-            <p class="hint">{{ reviewTitle }}</p>
-            <p v-if="evidenceQuality.level === 'low'" class="hint evidence-hint-warn">
-              证据可读性较低，建议在设置中启用 VL 增强并对该文档执行“重新解析”。
+            <p class="evidence-title-hint">{{ reviewTitle }}</p>
+            <p v-if="evidenceQuality.level === 'low'" class="evidence-warn">
+              证据可读性较低，建议在 API 设置中启用 VL 增强并对该文档执行“重新解析”。
             </p>
-            <ul class="evidence-list">
-              <li v-for="asset in pagedReviewEvidence" :key="asset.id">
-                <strong>{{ asset.asset_type || "asset" }}</strong>
-                <small v-if="Number(asset.merged_count || 1) > 1">合并 {{ Number(asset.merged_count) }} 条</small>
-                <span>第 {{ asset.source_page || 1 }} 页</span>
-                <p>{{ asset.source_excerpt || "" }}</p>
-              </li>
-              <li v-if="reviewEvidence.length === 0">暂无证据资产</li>
-            </ul>
+            <div class="evidence-list-container">
+              <ul class="evidence-list">
+                <li v-for="asset in pagedReviewEvidence" :key="asset.id" class="evidence-card">
+                  <div class="evidence-card-head">
+                    <span class="evidence-type">{{ asset.asset_type || "asset" }}</span>
+                    <span class="evidence-page">第 {{ asset.source_page || 1 }} 页</span>
+                  </div>
+                  <div class="evidence-card-body">
+                    {{ asset.source_excerpt || "" }}
+                  </div>
+                  <div v-if="Number(asset.merged_count || 1) > 1" class="evidence-card-foot">
+                    合并 {{ Number(asset.merged_count) }} 条片段
+                  </div>
+                </li>
+                <li v-if="reviewEvidence.length === 0" class="empty-state">暂无证据资产提取</li>
+              </ul>
+            </div>
             <div v-if="reviewEvidence.length > EVIDENCE_PAGE_SIZE" class="evidence-pagination">
-              <button class="segment-btn" type="button" :disabled="evidencePage <= 1" @click="prevEvidencePage">上一页</button>
-              <span>{{ evidencePage }} / {{ evidencePageCount }}</span>
-              <button class="segment-btn" type="button" :disabled="evidencePage >= evidencePageCount" @click="nextEvidencePage">
-                下一页
-              </button>
+              <button class="btn btn-ghost btn-sm" type="button" :disabled="evidencePage <= 1" @click="prevEvidencePage">上一页</button>
+              <span class="page-current">{{ evidencePage }} / {{ evidencePageCount }}</span>
+              <button class="btn btn-ghost btn-sm" type="button" :disabled="evidencePage >= evidencePageCount" @click="nextEvidencePage">下一页</button>
             </div>
           </section>
-
-          <footer class="copilot-foot">
-            <button class="segment-btn" type="button" @click="settingsDrawerOpen = true">设置</button>
-            <span>⌘/Ctrl + J</span>
-          </footer>
         </div>
-      </section>
+      </div>
     </aside>
 
-    <div v-if="settingsDrawerOpen" class="settings-overlay" @click.self="settingsDrawerOpen = false">
-      <section class="settings-drawer" role="dialog" aria-modal="true" aria-label="运行时配置">
-        <header class="settings-drawer-head">
+    <!-- Config Modal (API Settings) -->
+    <div v-if="settingsDrawerOpen" class="modal-overlay" @click.self="settingsDrawerOpen = false">
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-label="运行时配置">
+        <header class="modal-header">
           <div>
             <h2>运行时配置</h2>
-            <p class="hint">全部采用 BYOK：所有模型调用仅使用你在此页面填写的 Key，不读取服务端预置密钥。</p>
+            <p class="hint">全部采用 BYOK：所有模型调用仅使用您填写的 Key。</p>
           </div>
-          <button class="segment-btn" type="button" @click="settingsDrawerOpen = false">关闭</button>
+          <button class="btn btn-ghost btn-icon" type="button" @click="settingsDrawerOpen = false" aria-label="关闭">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
         </header>
 
-        <div class="settings-grid">
-          <p class="settings-subtitle">MinerU</p>
-          <p class="settings-subtitle">文档解析</p>
-          <label>
-            MinerU API Base
-            <input v-model.trim="settings.mineru_api_base" placeholder="https://mineru.net/api/v4/extract/task" />
-          </label>
-          <label>
-            MinerU API Token
-            <input v-model.trim="settings.mineru_api_key" type="password" placeholder="官网控制台 token" />
-          </label>
-
-          <p class="settings-subtitle">QA / Chat LLM</p>
-          <p class="settings-subtitle">问答生成</p>
-          <label>
-            QA Provider
-            <select v-model="settings.llm_provider">
-              <option value="stub">stub</option>
-              <option value="openai">openai</option>
-              <option value="anthropic">anthropic</option>
-            </select>
-          </label>
-          <label>
-            QA Model
-            <input v-model.trim="settings.llm_model" placeholder="gpt-4o-mini" />
-          </label>
-          <label>
-            QA API Base
-            <input v-model.trim="settings.llm_base_url" placeholder="https://api.openai.com/v1" />
-          </label>
-          <label>
-            QA API Key
-            <input v-model.trim="settings.llm_api_key" type="password" placeholder="llm-key" />
-          </label>
-
-          <p class="settings-subtitle">Embedding</p>
-          <p class="settings-subtitle">向量化</p>
-          <label>
-            Embedding Provider
-            <select v-model="settings.embedding_provider">
-              <option value="stub">stub</option>
-              <option value="openai">openai</option>
-            </select>
-          </label>
-          <label>
-            Embedding Model
-            <input v-model.trim="settings.embedding_model" placeholder="text-embedding-3-small" />
-          </label>
-          <label>
-            Embedding API Base
-            <input v-model.trim="settings.embedding_base_url" placeholder="https://api.openai.com/v1" />
-          </label>
-          <label>
-            Embedding API Key
-            <input v-model.trim="settings.embedding_api_key" type="password" placeholder="embedding-key" />
-          </label>
-
-          <p class="settings-subtitle">Rerank</p>
-          <p class="settings-subtitle">重排(可选)</p>
-          <label>
-            Rerank Provider
-            <select v-model="settings.rerank_provider">
-              <option value="stub">stub</option>
-              <option value="openai">openai</option>
-              <option value="local">local</option>
-            </select>
-          </label>
-          <label>
-            Rerank Model
-            <input v-model.trim="settings.rerank_model" placeholder="BAAI/bge-reranker-v2-m3" />
-          </label>
-          <label>
-            Rerank API Base
-            <input v-model.trim="settings.rerank_base_url" placeholder="https://api.openai.com/v1" />
-          </label>
-          <label>
-            Rerank API Key
-            <input v-model.trim="settings.rerank_api_key" type="password" placeholder="rerank-key" />
-          </label>
-
-          <p class="settings-subtitle">VL 增强</p>
-          <p class="settings-subtitle">图像/表格识别(可选)</p>
-          <label>
-            VL Provider
-            <select v-model="settings.vl_provider">
-              <option value="stub">stub</option>
-              <option value="openai">openai</option>
-            </select>
-          </label>
-          <label>
-            VL Model
-            <input v-model.trim="settings.vl_model" placeholder="gpt-4o-mini" />
-          </label>
-          <label>
-            VL API Base
-            <input v-model.trim="settings.vl_base_url" placeholder="https://api.openai.com/v1" />
-          </label>
-          <label>
-            VL API Key
-            <input v-model.trim="settings.vl_api_key" type="password" placeholder="vl-key" />
-          </label>
+        <div class="settings-tabs" role="tablist">
+          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'OCR' }" @click="activeSettingsTab = 'OCR'">OCR</button>
+          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'QA' }" @click="activeSettingsTab = 'QA'">QA</button>
+          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'EMBEDDING' }" @click="activeSettingsTab = 'EMBEDDING'">EMBEDDING</button>
+          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'RERANK' }" @click="activeSettingsTab = 'RERANK'">RERANK</button>
+          <button class="tab-btn" :class="{ 'active': activeSettingsTab === 'VL' }" @click="activeSettingsTab = 'VL'">VL</button>
         </div>
 
-        <div class="settings-actions">
-          <button class="btn btn-primary" type="button" @click="saveSettings">保存配置</button>
-          <span class="hint">{{ settingsStatus }}</span>
-        </div>
+        <div class="settings-content">
+          <article v-if="activeSettingsTab === 'OCR'" class="settings-form">
+            <div class="form-header">
+              <h3>MinerU 文档解析</h3>
+            </div>
+            <div class="form-grid">
+              <label class="form-field">
+                <span>MinerU API Base</span>
+                <input v-model.trim="settings.mineru_api_base" placeholder="https://mineru.net/api/v4/extract/task" />
+              </label>
+              <label class="form-field">
+                <span>MinerU API Token</span>
+                <input v-model.trim="settings.mineru_api_key" type="password" placeholder="官网 token" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-secondary" type="button" :disabled="mineruConn.loading" @click="testMineruConnectivity">
+                {{ mineruConn.loading ? "CHECKING..." : "API CHECK" }}
+              </button>
+              <span class="conn-badge" :class="connClass(mineruConn.ok)">{{ mineruConn.message }}</span>
+              <div class="spacer"></div>
+              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
+            </div>
+          </article>
 
-        <div class="connectivity-grid">
-          <div class="connectivity-item">
-            <button class="btn btn-secondary" type="button" :disabled="mineruConn.loading" @click="testMineruConnectivity">
-              {{ mineruConn.loading ? "测试中..." : "测试 MinerU 联通" }}
-            </button>
-            <span class="conn-state" :class="connClass(mineruConn.ok)">{{ mineruConn.message }}</span>
-          </div>
-          <div class="connectivity-item">
-            <button class="btn btn-secondary" type="button" :disabled="llmConn.loading" @click="testLLMConnectivity">
-              {{ llmConn.loading ? "测试中..." : "测试 LLM 联通" }}
-            </button>
-            <span class="conn-state" :class="connClass(llmConn.ok)">{{ llmConn.message }}</span>
-          </div>
-          <div class="connectivity-item">
-            <button class="btn btn-secondary" type="button" :disabled="embeddingConn.loading" @click="testEmbeddingConnectivity">
-              {{ embeddingConn.loading ? "测试中..." : "测试 Embedding 联通" }}
-            </button>
-            <span class="conn-state" :class="connClass(embeddingConn.ok)">{{ embeddingConn.message }}</span>
-          </div>
-          <div class="connectivity-item">
-            <button class="btn btn-secondary" type="button" :disabled="rerankConn.loading" @click="testRerankConnectivity">
-              {{ rerankConn.loading ? "测试中..." : "测试 Rerank 联通" }}
-            </button>
-            <span class="conn-state" :class="connClass(rerankConn.ok)">{{ rerankConn.message }}</span>
-          </div>
+          <article v-if="activeSettingsTab === 'QA'" class="settings-form">
+            <div class="form-header"><h3>问答生成模型</h3></div>
+            <div class="form-grid">
+              <label class="form-field">
+                <span>QA Provider</span>
+                <select v-model="settings.llm_provider">
+                  <option value="stub">stub</option>
+                  <option value="openai">openai</option>
+                  <option value="anthropic">anthropic</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>QA Model</span>
+                <input v-model.trim="settings.llm_model" placeholder="gpt-4o-mini" />
+              </label>
+              <label class="form-field">
+                <span>QA API Base</span>
+                <input v-model.trim="settings.llm_base_url" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label class="form-field">
+                <span>QA API Key</span>
+                <input v-model.trim="settings.llm_api_key" type="password" placeholder="llm-key" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-secondary" type="button" :disabled="llmConn.loading" @click="testLLMConnectivity">
+                {{ llmConn.loading ? "CHECKING..." : "API CHECK" }}
+              </button>
+              <span class="conn-badge" :class="connClass(llmConn.ok)">{{ llmConn.message }}</span>
+              <div class="spacer"></div>
+              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
+            </div>
+          </article>
+
+          <article v-if="activeSettingsTab === 'EMBEDDING'" class="settings-form">
+             <div class="form-header"><h3>向量化模型</h3></div>
+            <div class="form-grid">
+              <label class="form-field">
+                <span>Provider</span>
+                <select v-model="settings.embedding_provider">
+                  <option value="stub">stub</option>
+                  <option value="openai">openai</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>Model</span>
+                <input v-model.trim="settings.embedding_model" placeholder="text-embedding-3-small" />
+              </label>
+              <label class="form-field">
+                <span>API Base</span>
+                <input v-model.trim="settings.embedding_base_url" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label class="form-field">
+                <span>API Key</span>
+                <input v-model.trim="settings.embedding_api_key" type="password" placeholder="embedding-key" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-secondary" type="button" :disabled="embeddingConn.loading" @click="testEmbeddingConnectivity">
+                {{ embeddingConn.loading ? "CHECKING..." : "API CHECK" }}
+              </button>
+              <span class="conn-badge" :class="connClass(embeddingConn.ok)">{{ embeddingConn.message }}</span>
+              <div class="spacer"></div>
+              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
+            </div>
+          </article>
+
+          <article v-if="activeSettingsTab === 'RERANK'" class="settings-form">
+            <div class="form-header"><h3>重排模型 (可选)</h3></div>
+            <div class="form-grid">
+              <label class="form-field">
+                <span>Provider</span>
+                <select v-model="settings.rerank_provider">
+                  <option value="stub">stub</option>
+                  <option value="openai">openai</option>
+                  <option value="local">local</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>Model</span>
+                <input v-model.trim="settings.rerank_model" placeholder="BAAI/bge-reranker-v2-m3" />
+              </label>
+              <label class="form-field">
+                <span>API Base</span>
+                <input v-model.trim="settings.rerank_base_url" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label class="form-field">
+                <span>API Key</span>
+                <input v-model.trim="settings.rerank_api_key" type="password" placeholder="rerank-key" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-secondary" type="button" :disabled="rerankConn.loading" @click="testRerankConnectivity">
+                 {{ rerankConn.loading ? "CHECKING..." : "API CHECK" }}
+              </button>
+              <span class="conn-badge" :class="connClass(rerankConn.ok)">{{ rerankConn.message }}</span>
+              <div class="spacer"></div>
+              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
+            </div>
+          </article>
+
+          <article v-if="activeSettingsTab === 'VL'" class="settings-form">
+            <div class="form-header"><h3>图像/表格识别 (可选)</h3></div>
+            <div class="form-grid">
+              <label class="form-field">
+                <span>Provider</span>
+                <select v-model="settings.vl_provider">
+                  <option value="stub">stub</option>
+                  <option value="openai">openai</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>Model</span>
+                <input v-model.trim="settings.vl_model" placeholder="gpt-4o-mini" />
+              </label>
+              <label class="form-field">
+                <span>API Base</span>
+                <input v-model.trim="settings.vl_base_url" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label class="form-field">
+                <span>API Key</span>
+                <input v-model.trim="settings.vl_api_key" type="password" placeholder="vl-key" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-secondary" type="button" :disabled="vlConn.loading" @click="testVLConnectivity">
+                {{ vlConn.loading ? "CHECKING..." : "API CHECK" }}
+              </button>
+              <span class="conn-badge" :class="connClass(vlConn.ok)">{{ vlConn.message }}</span>
+              <div class="spacer"></div>
+              <button class="btn btn-primary" type="button" @click="saveSettings">保存应用</button>
+            </div>
+          </article>
         </div>
-      </section>
+      </div>
     </div>
   </div>
 </template>
@@ -387,8 +478,10 @@ const pdfInputRef = ref(null);
 const isUploading = ref(false);
 const chatSending = ref(false);
 const deletingVersionId = ref("");
+const sidebarCollapsed = ref(false);
 const copilotCollapsed = ref(true);
 const settingsDrawerOpen = ref(false);
+const activeSettingsTab = ref("OCR");
 const settingsStatus = ref("尚未保存");
 const uploadMessage = ref("等待上传 PDF。");
 const uploadMessageMode = ref("info");
@@ -446,6 +539,7 @@ const mineruConn = reactive({ loading: false, ok: null, message: "未测试" });
 const llmConn = reactive({ loading: false, ok: null, message: "未测试" });
 const embeddingConn = reactive({ loading: false, ok: null, message: "未测试" });
 const rerankConn = reactive({ loading: false, ok: null, message: "未测试" });
+const vlConn = reactive({ loading: false, ok: null, message: "未测试" });
 
 let pollToken = 0;
 let messageSeq = 0;
@@ -846,6 +940,16 @@ async function testRerankConnectivity() {
     return;
   }
   await runConnectivityTest("rerank", rerankConn);
+}
+
+async function testVLConnectivity() {
+  const runtime = collectSettings();
+  if (!runtime.vl_provider) {
+    vlConn.ok = false;
+    vlConn.message = "请先选择 VL Provider";
+    return;
+  }
+  await runConnectivityTest("vl", vlConn);
 }
 
 const filteredDocs = computed(() => {
