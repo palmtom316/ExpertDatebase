@@ -212,6 +212,7 @@ class TestUploadQueueAndFactories(unittest.TestCase):
         old = dict(os.environ)
         try:
             os.environ["REDIS_URL"] = "redis://localhost:6379/0"
+            os.environ.pop("TASK_QUEUE_BACKEND", None)  # let factory auto-detect
             q = build_task_queue_from_env()
             self.assertIsInstance(q, RedisTaskQueue)
         finally:
