@@ -19,6 +19,7 @@ class TestPayloadBuilder(unittest.TestCase):
     def test_build_payload_has_hybrid_fields(self) -> None:
         chunk = {
             "doc_id": "doc1",
+            "version_id": "ver1",
             "doc_name": "demo.pdf",
             "chunk_id": "ck1",
             "chapter_id": "ch1",
@@ -42,6 +43,7 @@ class TestPayloadBuilder(unittest.TestCase):
         self.assertIn("entity_person_ids", payload)
         self.assertIn("rel_person_role", payload)
         self.assertIn("rel_person_role_project", payload)
+        self.assertEqual(payload["version_id"], "ver1")
         self.assertEqual(payload["val_voltage_kv"], 110)
         self.assertEqual(payload["val_contract_amount_w"], 5000)
 

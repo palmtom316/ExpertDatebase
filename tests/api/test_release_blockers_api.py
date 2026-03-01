@@ -46,8 +46,7 @@ def test_expandable_evidence_contains_before_after_context() -> None:
 def test_llm_router_masks_sensitive_text_before_external_call(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = InMemoryLLMLogRepo()
 
-    monkeypatch.setenv("LLM_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_PROVIDER", "stub")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example-openai.test/v1")
 
     captured = {}
@@ -71,7 +70,14 @@ def test_llm_router_masks_sensitive_text_before_external_call(monkeypatch: pytes
     monkeypatch.setattr("app.services.llm_router.requests.post", fake_post)
 
     router = LLMRouter(log_repo=repo)
-    router.route_and_generate(task_type="qa_generate", prompt="联系人13812345678，邮箱abc@test.com")
+    router.route_and_generate(
+        task_type="qa_generate",
+        prompt="联系人13812345678，邮箱abc@test.com",
+        runtime_config={
+            "llm_provider": "openai",
+            "llm_api_key": "sk-test",
+        },
+    )
 
     user_prompt = captured["body"]["messages"][1]["content"]
     assert "13812345678" not in user_prompt
@@ -81,8 +87,7 @@ def test_llm_router_masks_sensitive_text_before_external_call(monkeypatch: pytes
 def test_llm_router_circuit_breaker_opens_after_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = InMemoryLLMLogRepo()
 
-    monkeypatch.setenv("LLM_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_PROVIDER", "stub")
     monkeypatch.setenv("LLM_CB_FAIL_THRESHOLD", "2")
     monkeypatch.setenv("LLM_CB_COOLDOWN_SECONDS", "60")
 
@@ -92,9 +97,13 @@ def test_llm_router_circuit_breaker_opens_after_threshold(monkeypatch: pytest.Mo
     monkeypatch.setattr("app.services.llm_router.requests.post", fake_post)
 
     router = LLMRouter(log_repo=repo)
-    router.route_and_generate(task_type="qa_generate", prompt="q1")
-    router.route_and_generate(task_type="qa_generate", prompt="q2")
-    res = router.route_and_generate(task_type="qa_generate", prompt="q3")
+    runtime = {
+        "llm_provider": "openai",
+        "llm_api_key": "sk-test",
+    }
+    router.route_and_generate(task_type="qa_generate", prompt="q1", runtime_config=runtime)
+    router.route_and_generate(task_type="qa_generate", prompt="q2", runtime_config=runtime)
+    res = router.route_and_generate(task_type="qa_generate", prompt="q3", runtime_config=runtime)
 
     assert res["provider"] == "stub"
     assert any("circuit_open" in str(x.get("metadata_json", {})) for x in repo.logs)

@@ -49,6 +49,7 @@ def retry_failed_versions(
                 "doc_id": doc_id,
                 "version_id": version_id,
                 "object_key": object_key,
+                "doc_type": item.get("doc_type"),
             }
         )
         registry.update_version_status(
@@ -64,4 +65,53 @@ def retry_failed_versions(
     return {
         "retried_count": len(retried_ids),
         "version_ids": retried_ids,
+    }
+
+
+def reprocess_version(
+    registry: DocRegistry,
+    task_queue: TaskQueue,
+    version_id: str,
+    runtime_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    target_id = str(version_id or "").strip()
+    if not target_id:
+        return {"requeued": False, "reason": "missing_version_id"}
+
+    versions = registry.list_versions(limit=None)
+    item = next((v for v in versions if str(v.get("id") or "") == target_id), None)
+    if item is None:
+        return {"requeued": False, "reason": "not_found", "version_id": target_id}
+
+    object_key = item.get("storage_key")
+    doc_id = item.get("doc_id")
+    if not object_key or not doc_id:
+        return {"requeued": False, "reason": "missing_object_key_or_doc_id", "version_id": target_id}
+
+    payload: dict[str, Any] = {
+        "doc_id": doc_id,
+        "version_id": target_id,
+        "object_key": object_key,
+        "doc_type": item.get("doc_type"),
+    }
+    if runtime_config:
+        payload["runtime_config"] = runtime_config
+    task_queue.enqueue_document_process(payload)
+
+    prev_status = str(item.get("status") or "")
+    registry.update_version_status(
+        version_id=target_id,
+        status="retry_queued",
+        notes={
+            "retry_from": prev_status or "unknown",
+            "previous_notes": item.get("notes"),
+            "trigger": "manual_reprocess",
+        },
+    )
+    return {
+        "requeued": True,
+        "version_id": target_id,
+        "doc_id": doc_id,
+        "object_key": object_key,
+        "previous_status": prev_status,
     }

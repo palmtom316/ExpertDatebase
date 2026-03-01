@@ -28,8 +28,7 @@ class _DummyResponse:
 def test_llm_router_uses_openai_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = InMemoryLLMLogRepo()
 
-    monkeypatch.setenv("LLM_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_PROVIDER", "stub")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example-openai.test/v1")
 
@@ -47,7 +46,14 @@ def test_llm_router_uses_openai_when_configured(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("app.services.llm_router.requests.post", fake_post)
 
     router = LLMRouter(log_repo=repo)
-    res = router.route_and_generate(task_type="qa_generate", prompt="合同金额是多少？")
+    res = router.route_and_generate(
+        task_type="qa_generate",
+        prompt="合同金额是多少？",
+        runtime_config={
+            "llm_provider": "openai",
+            "llm_api_key": "sk-test",
+        },
+    )
 
     assert res["text"] == "这是商业模型回答"
     assert res["provider"] == "openai"
@@ -62,8 +68,7 @@ def test_llm_router_uses_openai_when_configured(monkeypatch: pytest.MonkeyPatch)
 def test_llm_router_falls_back_to_stub_on_openai_error(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = InMemoryLLMLogRepo()
 
-    monkeypatch.setenv("LLM_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_PROVIDER", "stub")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
 
     def fake_post(url: str, headers: dict, json: dict, timeout: float):
@@ -72,7 +77,14 @@ def test_llm_router_falls_back_to_stub_on_openai_error(monkeypatch: pytest.Monke
     monkeypatch.setattr("app.services.llm_router.requests.post", fake_post)
 
     router = LLMRouter(log_repo=repo)
-    res = router.route_and_generate(task_type="qa_generate", prompt="测试回退")
+    res = router.route_and_generate(
+        task_type="qa_generate",
+        prompt="测试回退",
+        runtime_config={
+            "llm_provider": "openai",
+            "llm_api_key": "sk-test",
+        },
+    )
 
     assert res["provider"] == "stub"
     assert "根据证据" in res["text"]

@@ -79,12 +79,7 @@ class LLMRouter:
 
             provider = mapped
             if provider not in {"openai", "anthropic", "stub"}:
-                if os.getenv("OPENAI_API_KEY"):
-                    provider = "openai"
-                elif os.getenv("ANTHROPIC_API_KEY"):
-                    provider = "anthropic"
-                else:
-                    provider = "stub"
+                provider = "stub"
 
             if provider not in candidates:
                 candidates.append(provider)
@@ -104,9 +99,9 @@ class LLMRouter:
 
     def _call_openai(self, task_type: str, prompt: str, runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
         runtime = runtime_config or {}
-        api_key = str(runtime.get("llm_api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
+        api_key = str(runtime.get("llm_api_key") or "").strip()
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is required when provider=openai")
+            raise RuntimeError("BYOK required: llm_api_key is required when provider=openai")
 
         base_url = str(runtime.get("llm_base_url") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
         model = str(runtime.get("llm_model") or os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
@@ -148,9 +143,9 @@ class LLMRouter:
 
     def _call_anthropic(self, task_type: str, prompt: str, runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
         runtime = runtime_config or {}
-        api_key = str(runtime.get("llm_api_key") or os.getenv("ANTHROPIC_API_KEY", "")).strip()
+        api_key = str(runtime.get("llm_api_key") or "").strip()
         if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY is required when provider=anthropic")
+            raise RuntimeError("BYOK required: llm_api_key is required when provider=anthropic")
 
         base_url = str(runtime.get("llm_base_url") or os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")).rstrip("/")
         model = str(runtime.get("llm_model") or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"))

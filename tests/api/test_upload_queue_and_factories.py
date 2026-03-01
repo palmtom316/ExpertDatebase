@@ -38,12 +38,22 @@ class TestUploadQueueAndFactories(unittest.TestCase):
                 storage=storage,
                 registry=registry,
                 task_queue=queue,
+                doc_type="公司资质",
                 runtime_config={
                     "mineru_api_base": "https://mineru.example.com",
                     "mineru_api_key": "mineru-key",
                     "llm_provider": "openai",
                     "llm_api_key": "llm-key",
                     "llm_model": "gpt-4o-mini",
+                    "embedding_provider": "openai",
+                    "embedding_api_key": "emb-key",
+                    "embedding_model": "text-embedding-3-small",
+                    "rerank_provider": "local",
+                    "rerank_model": "gpt-4o-mini",
+                    "vl_provider": "openai",
+                    "vl_api_key": "vl-key",
+                    "vl_model": "gpt-4o-mini",
+                    "vl_base_url": "https://api.openai.com/v1",
                 },
             )
 
@@ -52,6 +62,138 @@ class TestUploadQueueAndFactories(unittest.TestCase):
             self.assertEqual(queue.jobs[0]["version_id"], result["version_id"])
             self.assertEqual(queue.jobs[0]["runtime_config"]["mineru_api_base"], "https://mineru.example.com")
             self.assertEqual(queue.jobs[0]["runtime_config"]["llm_provider"], "openai")
+            self.assertEqual(queue.jobs[0]["runtime_config"]["embedding_provider"], "openai")
+            self.assertEqual(queue.jobs[0]["runtime_config"]["rerank_provider"], "local")
+            self.assertEqual(queue.jobs[0]["runtime_config"]["vl_provider"], "openai")
+            self.assertEqual(queue.jobs[0]["doc_type"], "公司资质")
+            self.assertEqual(result.get("doc_type"), "公司资质")
+            self.assertIn("/company-qualification/", result["object_key"])
+
+    def test_upload_deduplicates_by_content_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            from app.services.storage import LocalObjectStorage
+
+            storage = LocalObjectStorage(Path(tmp) / "objects")
+            registry = JSONDocRegistry(Path(tmp) / "registry.json")
+            queue = DummyQueue()
+            data = b"%PDF-1.4 same-content"
+
+            first = upload_pdf_bytes(
+                filename="same.pdf",
+                content=data,
+                storage=storage,
+                registry=registry,
+                task_queue=queue,
+            )
+            second = upload_pdf_bytes(
+                filename="same.pdf",
+                content=data,
+                storage=storage,
+                registry=registry,
+                task_queue=queue,
+            )
+
+            self.assertFalse(first.get("deduplicated"))
+            self.assertTrue(second.get("deduplicated"))
+            self.assertEqual(first["doc_id"], second["doc_id"])
+            self.assertEqual(first["version_id"], second["version_id"])
+            self.assertEqual(first["object_key"], second["object_key"])
+            self.assertEqual(len(queue.jobs), 1)
+
+    def test_upload_dedup_skips_failed_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            from app.services.storage import LocalObjectStorage
+
+            storage = LocalObjectStorage(Path(tmp) / "objects")
+            registry = JSONDocRegistry(Path(tmp) / "registry.json")
+            queue = DummyQueue()
+            data = b"%PDF-1.4 failed-content"
+
+            first = upload_pdf_bytes(
+                filename="failed.pdf",
+                content=data,
+                storage=storage,
+                registry=registry,
+                task_queue=queue,
+            )
+            registry.update_version_status(first["version_id"], "failed", notes={"error": "mock"})
+
+            second = upload_pdf_bytes(
+                filename="failed.pdf",
+                content=data,
+                storage=storage,
+                registry=registry,
+                task_queue=queue,
+            )
+
+            self.assertNotEqual(first["version_id"], second["version_id"])
+            self.assertFalse(second.get("deduplicated"))
+            self.assertEqual(len(queue.jobs), 2)
+
+    def test_upload_dedup_requeues_processed_when_runtime_mineru_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            from app.services.storage import LocalObjectStorage
+
+            storage = LocalObjectStorage(Path(tmp) / "objects")
+            registry = JSONDocRegistry(Path(tmp) / "registry.json")
+            queue = DummyQueue()
+            data = b"%PDF-1.4 reprocess-content"
+
+            first = upload_pdf_bytes(
+                filename="reprocess.pdf",
+                content=data,
+                storage=storage,
+                registry=registry,
+                task_queue=queue,
+            )
+            self.assertEqual(len(queue.jobs), 1)
+            registry.update_version_status(first["version_id"], "processed", notes={"ok": True})
+
+            second = upload_pdf_bytes(
+                filename="reprocess.pdf",
+                content=data,
+                storage=storage,
+                registry=registry,
+                task_queue=queue,
+                runtime_config={
+                    "mineru_api_base": "https://mineru.net/api/v4/extract/task",
+                    "mineru_api_key": "token",
+                },
+            )
+
+            self.assertTrue(second.get("deduplicated"))
+            self.assertTrue(second.get("requeued"))
+            self.assertEqual(second.get("status"), "retry_queued")
+            self.assertEqual(first["version_id"], second["version_id"])
+            self.assertEqual(len(queue.jobs), 2)
+            self.assertEqual(queue.jobs[-1]["version_id"], first["version_id"])
+            self.assertIn("doc_type", queue.jobs[-1])
+
+    def test_registry_can_filter_versions_by_doc_type(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            from app.services.storage import LocalObjectStorage
+
+            storage = LocalObjectStorage(Path(tmp) / "objects")
+            registry = JSONDocRegistry(Path(tmp) / "registry.json")
+
+            upload_pdf_bytes(
+                filename="a.pdf",
+                content=b"%PDF-1.4 a",
+                storage=storage,
+                registry=registry,
+                doc_type="规范规程",
+            )
+            upload_pdf_bytes(
+                filename="b.pdf",
+                content=b"%PDF-1.4 b",
+                storage=storage,
+                registry=registry,
+                doc_type="人员资质",
+            )
+
+            rows = registry.list_versions(doc_type="人员资质")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].get("doc_type"), "人员资质")
 
     def test_storage_factory_builds_minio(self) -> None:
         old = dict(os.environ)

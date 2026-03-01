@@ -10,7 +10,7 @@ if str(API_SERVICE) not in sys.path:
     sys.path.insert(0, str(API_SERVICE))
 
 from app.services.doc_registry import JSONDocRegistry  # noqa: E402
-from app.services.retry_service import cleanup_failed_versions, retry_failed_versions  # noqa: E402
+from app.services.retry_service import cleanup_failed_versions, reprocess_version, retry_failed_versions  # noqa: E402
 
 
 class DummyQueue:
@@ -76,6 +76,41 @@ class TestRetryFailedService(unittest.TestCase):
             data = json.loads(path.read_text(encoding="utf-8"))
             v1 = next(x for x in data["versions"] if x["id"] == "ver_1")
             self.assertEqual(v1["status"], "failed_archived")
+
+    def test_reprocess_version_requeues_processed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "registry.json"
+            registry = self._prepare_registry(path)
+            queue = DummyQueue()
+
+            out = reprocess_version(
+                registry=registry,
+                task_queue=queue,
+                version_id="ver_2",
+                runtime_config={"mineru_api_base": "https://mineru.net/api/v4/extract/task", "mineru_api_key": "token"},
+            )
+
+            self.assertTrue(out["requeued"])
+            self.assertEqual(out["version_id"], "ver_2")
+            self.assertEqual(len(queue.jobs), 1)
+            self.assertEqual(queue.jobs[0]["version_id"], "ver_2")
+            self.assertIn("runtime_config", queue.jobs[0])
+
+            data = json.loads(path.read_text(encoding="utf-8"))
+            v2 = next(x for x in data["versions"] if x["id"] == "ver_2")
+            self.assertEqual(v2["status"], "retry_queued")
+
+    def test_reprocess_version_returns_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "registry.json"
+            registry = self._prepare_registry(path)
+            queue = DummyQueue()
+
+            out = reprocess_version(registry=registry, task_queue=queue, version_id="ver_x")
+
+            self.assertFalse(out["requeued"])
+            self.assertEqual(out["reason"], "not_found")
+            self.assertEqual(len(queue.jobs), 0)
 
 
 if __name__ == "__main__":

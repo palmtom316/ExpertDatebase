@@ -41,3 +41,24 @@ def test_validate_upload_accepts_pdf() -> None:
         content_type="application/pdf",
         content=b"%PDF-1.4",
     )
+
+
+def test_validate_upload_rejects_disguised_executable() -> None:
+    content = b"MZ\x90\x00This program cannot be run in DOS mode"
+    with pytest.raises(HTTPException) as exc:
+        validate_upload_payload(
+            filename="evil.pdf",
+            content_type="application/pdf",
+            content=content,
+        )
+    assert exc.value.status_code == 415
+
+
+def test_validate_upload_rejects_pdf_without_magic_header() -> None:
+    with pytest.raises(HTTPException) as exc:
+        validate_upload_payload(
+            filename="fake.pdf",
+            content_type="application/pdf",
+            content=b"not-a-real-pdf",
+        )
+    assert exc.value.status_code == 415

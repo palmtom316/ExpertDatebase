@@ -29,6 +29,7 @@ class TestUploadAPI(unittest.TestCase):
             self.assertIn("doc_id", result)
             self.assertIn("version_id", result)
             self.assertIn("object_key", result)
+            self.assertEqual(result.get("doc_type"), "规范规程")
 
     def test_upload_route_registered(self) -> None:
         paths = {r.path for r in app.routes}

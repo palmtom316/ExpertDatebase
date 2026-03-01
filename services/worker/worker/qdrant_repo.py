@@ -68,6 +68,31 @@ class QdrantHttpRepo:
             resp.raise_for_status()
         self._collection_ready = True
 
+    def _recreate_collection(self, vector_size: int) -> None:
+        # Recovery path for deleted/mismatched collections.
+        requests.delete(
+            self._url(f"/collections/{self.collection}"),
+            timeout=self.timeout_s,
+        )
+        self._collection_ready = False
+        self._ensure_collection(vector_size)
+
+    def _error_text(self, resp: requests.Response | None) -> str:
+        if resp is None:
+            return ""
+        try:
+            return str(getattr(resp, "text", "") or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _is_recoverable_upsert_error(self, status_code: int, body: str) -> bool:
+        text = (body or "").lower()
+        if status_code == 404:
+            return True
+        if status_code == 400 and any(k in text for k in ["dimension", "vector", "wrong", "size", "not match"]):
+            return True
+        return False
+
     def _normalize_point_id(self, point_id: str) -> str:
         try:
             UUID(str(point_id))
@@ -86,12 +111,24 @@ class QdrantHttpRepo:
                 }
             ]
         }
-        resp = requests.put(
-            self._url(f"/collections/{self.collection}/points?wait=true"),
-            json=body,
-            timeout=self.timeout_s,
-        )
-        resp.raise_for_status()
+        endpoint = self._url(f"/collections/{self.collection}/points?wait=true")
+        resp = requests.put(endpoint, json=body, timeout=self.timeout_s)
+        try:
+            resp.raise_for_status()
+            return
+        except requests.HTTPError as exc:
+            status_code = int(getattr(resp, "status_code", 0) or 0)
+            body_text = self._error_text(resp)
+            if self._is_recoverable_upsert_error(status_code=status_code, body=body_text):
+                self._recreate_collection(len(vector))
+                retry_resp = requests.put(endpoint, json=body, timeout=self.timeout_s)
+                try:
+                    retry_resp.raise_for_status()
+                    return
+                except requests.HTTPError as retry_exc:
+                    retry_body = self._error_text(retry_resp)
+                    raise RuntimeError(f"{retry_exc} | body={retry_body[:300]}") from retry_exc
+            raise RuntimeError(f"{exc} | body={body_text[:300]}") from exc
 
     def search(self, query_vector: list[float], filter_json: dict[str, Any] | None, limit: int = 5) -> list[dict[str, Any]]:
         body: dict[str, Any] = {

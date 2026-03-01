@@ -86,6 +86,7 @@ def build_payload(
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "doc_id": chunk["doc_id"],
+        "version_id": chunk.get("version_id", ""),
         "doc_name": chunk.get("doc_name", ""),
         "chunk_id": chunk["chunk_id"],
         "chapter_id": chunk["chapter_id"],

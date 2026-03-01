@@ -14,6 +14,9 @@ class ArtifactRepo(Protocol):
     def get_version_artifacts(self, version_id: str) -> dict[str, Any] | None:
         raise NotImplementedError
 
+    def delete_version_assets(self, version_id: str) -> int:
+        raise NotImplementedError
+
 
 def _normalize_notes(notes: Any) -> dict[str, Any]:
     if isinstance(notes, dict):
@@ -73,6 +76,30 @@ class JSONArtifactRepo:
                 "asset_count": len(assets),
             },
         }
+
+    def delete_version_assets(self, version_id: str) -> int:
+        if not self.assets_path.exists():
+            return 0
+        kept_lines: list[str] = []
+        deleted_count = 0
+        for line in self.assets_path.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                item = json.loads(raw)
+            except json.JSONDecodeError:
+                kept_lines.append(raw)
+                continue
+            if str(item.get("version_id") or "") == version_id:
+                deleted_count += 1
+                continue
+            kept_lines.append(raw)
+        out = "\n".join(kept_lines)
+        if out:
+            out += "\n"
+        self.assets_path.write_text(out, encoding="utf-8")
+        return deleted_count
 
 
 class SQLArtifactRepo:
@@ -169,6 +196,20 @@ class SQLArtifactRepo:
                 "asset_count": len(assets),
             },
         }
+
+    def delete_version_assets(self, version_id: str) -> int:
+        self._ensure_schema()
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    DELETE FROM assets
+                    WHERE version_id=:version_id
+                    """
+                ),
+                {"version_id": version_id},
+            )
+            return int(result.rowcount or 0)
 
 
 def build_artifact_repo_from_env() -> ArtifactRepo:

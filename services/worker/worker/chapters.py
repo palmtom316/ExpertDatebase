@@ -9,15 +9,26 @@ from typing import Any
 TITLE_PATTERNS = [
     re.compile(r"^第[一二三四五六七八九十0-9]+章"),
     re.compile(r"^[一二三四五六七八九十]+、"),
+    re.compile(r"^[0-9]{1,2}\s+\S+"),
     re.compile(r"^\d+\.\d+"),
 ]
 
 
 def _looks_like_title(text: str) -> bool:
-    return any(p.search(text) for p in TITLE_PATTERNS)
+    t = str(text or "").strip()
+    if not t:
+        return False
+    if re.match(r"^\d+\.\d+\.\d+", t) and len(t) > 20:
+        return False
+    # Clause sentences like "3.0.12 ...应..." are not chapter titles.
+    if len(t) > 60 and ("。" in t or "；" in t):
+        return False
+    if len(t) > 90:
+        return False
+    return any(p.search(t) for p in TITLE_PATTERNS)
 
 
-def build_chapters(blocks: list[dict[str, Any]], min_merge_chars: int = 4000) -> list[dict[str, Any]]:
+def build_chapters(blocks: list[dict[str, Any]], min_merge_chars: int = 1200) -> list[dict[str, Any]]:
     if not blocks:
         return []
 
@@ -46,6 +57,7 @@ def build_chapters(blocks: list[dict[str, Any]], min_merge_chars: int = 4000) ->
                     "start_page": p,
                     "end_page": p,
                     "block_ids": [b["block_id"]],
+                    "blocks": [{"block_id": b["block_id"], "page_no": p, "text": text}],
                     "text": text,
                     "status": "normal",
                 }
@@ -60,11 +72,13 @@ def build_chapters(blocks: list[dict[str, Any]], min_merge_chars: int = 4000) ->
                     "start_page": p,
                     "end_page": p,
                     "block_ids": [],
+                    "blocks": [],
                     "text": "",
                     "status": "degenerate",
                 }
 
             current["block_ids"].append(b["block_id"])
+            current["blocks"].append({"block_id": b["block_id"], "page_no": p, "text": text})
             current["end_page"] = p
             current["text"] = (current["text"] + "\n" + text).strip()
 
@@ -82,6 +96,7 @@ def build_chapters(blocks: list[dict[str, Any]], min_merge_chars: int = 4000) ->
         if len(buf.get("text", "")) < min_merge_chars:
             buf["end_page"] = ch["end_page"]
             buf["block_ids"] += ch["block_ids"]
+            buf["blocks"] += ch.get("blocks", [])
             buf["text"] = (buf["text"] + "\n" + ch["text"]).strip()
             buf["status"] = "degenerate"
         else:

@@ -35,6 +35,35 @@ class TestQdrantHttpRepo(unittest.TestCase):
         self.assertEqual(body["limit"], 3)
         self.assertIn("filter", body)
 
+    @patch("app.services.search_service.requests.post")
+    def test_search_returns_empty_when_collection_missing(self, m_post: Mock) -> None:
+        from requests import HTTPError
+
+        resp = Mock()
+        resp.status_code = 404
+        resp.raise_for_status.side_effect = HTTPError("404 Client Error", response=resp)
+        m_post.return_value = resp
+
+        repo = QdrantHttpRepo(endpoint="http://localhost:6333", collection="chunks_v1", vector_name="text_embedding")
+        out = repo.search(query_vector=[0.1, 0.2], filter_json=None, limit=3)
+
+        self.assertEqual(out, [])
+
+    @patch("app.services.search_service.requests.post")
+    def test_search_returns_empty_when_vector_dimension_mismatch(self, m_post: Mock) -> None:
+        from requests import HTTPError
+
+        resp = Mock()
+        resp.status_code = 400
+        resp.text = "Wrong input: Vector dimension error: expected dim: 1024, got 1536"
+        resp.raise_for_status.side_effect = HTTPError("400 Client Error", response=resp)
+        m_post.return_value = resp
+
+        repo = QdrantHttpRepo(endpoint="http://localhost:6333", collection="chunks_v1", vector_name="text_embedding")
+        out = repo.search(query_vector=[0.1, 0.2], filter_json=None, limit=3)
+
+        self.assertEqual(out, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -28,17 +29,100 @@ def assess_quality(blocks: list[dict[str, Any]], tables: list[dict[str, Any]]) -
     }
 
 
+def _readable_ratio(text: str) -> float:
+    s = str(text or "")
+    if not s:
+        return 0.0
+    keep = 0
+    for ch in s:
+        if ch.isalnum() or ("\u4e00" <= ch <= "\u9fff"):
+            keep += 1
+            continue
+        if ch in "，。！？；：、（）()[]【】《》“”‘’+-*/%=._:;,\"' \n\t":
+            keep += 1
+    return keep / max(1, len(s))
+
+
+def _looks_noisy_chunk(text: str) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return True
+    lower = s.lower()
+    if "%pdf-" in lower or "obj<</filter/flatedecode" in lower or "endstream" in lower:
+        return True
+    if "\\mathrm" in s and len(s) > 60:
+        return True
+    if len(s) >= 120 and _readable_ratio(s) < 0.5:
+        return True
+    return False
+
+
+def _has_evidence_signal(text: str) -> bool:
+    s = str(text or "")
+    if re.search(r"\b\d+\.\d+(?:\.\d+)?\b", s):
+        return True
+    if re.search(r"\d+\s*(?:kV|KV|千伏|MVA|万元|万|亿)", s, flags=re.IGNORECASE):
+        return True
+    if re.search(r"(证书|合同|项目|业主|负责人|断路器|电容器|验收|规范|标准)", s):
+        return True
+    return False
+
+
+def filter_chunks_for_indexing(chunks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Drop duplicate/noisy chunks before vector indexing."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    dropped_noise = 0
+    dropped_short = 0
+    dropped_dup = 0
+
+    for chunk in chunks:
+        text = str((chunk or {}).get("text") or "").strip()
+        normalized = re.sub(r"\s+", " ", text)
+        signature = re.sub(r"[\s\W_]+", "", normalized.lower())
+        if signature and signature in seen:
+            dropped_dup += 1
+            continue
+
+        if _looks_noisy_chunk(text):
+            dropped_noise += 1
+            continue
+
+        if len(normalized) < 100 and not _has_evidence_signal(normalized):
+            dropped_short += 1
+            continue
+
+        if signature:
+            seen.add(signature)
+        out.append(chunk)
+
+    # Fallback: avoid empty index in tiny docs.
+    if not out and chunks:
+        out = list(chunks[: min(8, len(chunks))])
+
+    return out, {
+        "dropped_noise": dropped_noise,
+        "dropped_short": dropped_short,
+        "dropped_dup": dropped_dup,
+    }
+
+
 def classify_document(blocks: list[dict[str, Any]], tables: list[dict[str, Any]]) -> dict[str, Any]:
     corpus = "\n".join(str(x.get("text", "")) for x in blocks)
     corpus += "\n" + "\n".join(str(x.get("raw_text", "")) for x in tables)
 
     hints = {
-        "qualification_doc": ["资格", "证书", "建造师", "执业"],
-        "equipment_doc": ["设备", "主变", "开关", "清单"],
-        "project_proof": ["项目", "合同", "中标", "业绩", "kV"],
+        "规范规程": ["规范", "规程", "标准", "条文", "术语", "总则"],
+        "投标文件": ["投标", "招标", "评标", "报价", "投标人"],
+        "公司资质": ["资质", "营业执照", "许可", "认证", "体系证书"],
+        "公司业绩": ["业绩", "项目", "中标", "合同", "竣工"],
+        "公司资产": ["资产", "设备清单", "固定资产", "产权", "库存"],
+        "人员资质": ["人员资质", "证书", "建造师", "执业", "岗位证"],
+        "人员业绩": ["项目经理", "负责人", "履历", "个人业绩", "任职"],
+        "优秀标书": ["优秀标书", "样板", "范本", "最佳实践"],
     }
 
-    best_type = "project_proof"
+    best_type = "规范规程"
     best_score = -1
     for doc_type, keys in hints.items():
         hit = sum(1 for key in keys if key in corpus)

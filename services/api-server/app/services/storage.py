@@ -19,6 +19,9 @@ class ObjectStorage(Protocol):
     def exists(self, object_key: str) -> bool:
         raise NotImplementedError
 
+    def delete_bytes(self, object_key: str) -> None:
+        raise NotImplementedError
+
 
 class LocalObjectStorage:
     def __init__(self, root: Path) -> None:
@@ -32,6 +35,13 @@ class LocalObjectStorage:
 
     def exists(self, object_key: str) -> bool:
         return (self.root / object_key).exists()
+
+    def delete_bytes(self, object_key: str) -> None:
+        target = self.root / object_key
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            return
 
 
 class MinioObjectStorage:
@@ -68,6 +78,16 @@ class MinioObjectStorage:
             return True
         except S3Error:
             return False
+
+    def delete_bytes(self, object_key: str) -> None:
+        self._ensure_bucket()
+        try:
+            self.client.remove_object(self.bucket, object_key)
+        except S3Error as exc:
+            code = str(getattr(exc, "code", "") or "")
+            if code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+                return
+            raise
 
 
 def build_storage_from_env() -> ObjectStorage:

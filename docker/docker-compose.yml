@@ -94,11 +94,11 @@ services:
       timeout: 5s
       retries: 3
 
-  web-ui:
+  frontend:
     build:
       context: ..
       dockerfile: src/frontend/Dockerfile
-    image: expertkb/web-ui:dev
+    image: expertkb/frontend:dev
     profiles: ["ui"]
     ports:
       - "5500:80"

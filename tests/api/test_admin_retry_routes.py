@@ -15,6 +15,7 @@ class TestAdminRetryRoutes(unittest.TestCase):
         paths = {r.path for r in app.routes}
         self.assertIn("/api/admin/jobs/cleanup-failed", paths)
         self.assertIn("/api/admin/jobs/retry-failed", paths)
+        self.assertIn("/api/admin/jobs/reprocess", paths)
         self.assertIn("/api/admin/jobs/failed", paths)
 
 

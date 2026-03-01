@@ -63,3 +63,6 @@ def test_process_document_job_updates_status_and_upserts_chunks() -> None:
     assert rt.doc_registry.calls[0][1] == "processing"
     assert rt.doc_registry.calls[-1][1] == "processed"
     assert len(rt.qdrant_repo.items) >= 1
+    first = rt.qdrant_repo.items[0]
+    assert str(first["id"]).startswith("doc_1:ver_1:")
+    assert first["payload"]["version_id"] == "ver_1"

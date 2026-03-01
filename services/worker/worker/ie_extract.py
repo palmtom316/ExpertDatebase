@@ -13,6 +13,92 @@ def _find(pattern: str, text: str) -> str | None:
     return m.group(1).strip()
 
 
+def _normalize_line(line: str) -> str:
+    text = str(line or "")
+    text = text.replace("\x00", " ")
+    text = re.sub(r"\$[^$]{0,200}\$", " ", text)
+    text = re.sub(r"\\[a-zA-Z]+\s*\{[^}]*\}", " ", text)
+    text = re.sub(r"\\[a-zA-Z]+", " ", text)
+    text = text.replace("{", " ").replace("}", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _looks_like_toc_line(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return True
+    lower = text.lower()
+    if re.search(r"\b\d{1,2}\.\d{1,2}(?:\.\d+)?\s*[a-z]", lower) and re.search(r"\(\s*\d{1,3}\s*\)", lower):
+        return True
+    if re.search(r"[.…]{2,}\s*\(?\d{1,3}\)?\s*$", text):
+        return True
+    if "table of content" in lower or "contents" == lower:
+        return True
+    return False
+
+
+def _readable_ratio(text: str) -> float:
+    s = str(text or "")
+    if not s:
+        return 0.0
+    readable = 0
+    for ch in s:
+        if ch.isalnum():
+            readable += 1
+            continue
+        if "\u4e00" <= ch <= "\u9fff":
+            readable += 1
+            continue
+        if ch in "，。！？；：、（）()[]【】《》“”‘’+-*/%=._:;,\"' ":
+            readable += 1
+    return readable / max(1, len(s))
+
+
+def _build_readable_excerpt(text: str, limit: int = 220) -> str:
+    raw_lines = [x for x in str(text or "").splitlines() if str(x or "").strip()]
+    cleaned_lines = [_normalize_line(line) for line in raw_lines]
+    cleaned_lines = [line for line in cleaned_lines if line and not _looks_like_toc_line(line)]
+
+    keywords = [
+        "项目名称",
+        "工程名称",
+        "业主单位",
+        "建设单位",
+        "合同金额",
+        "中标价",
+        "项目经理",
+        "技术负责人",
+        "资格证",
+        "证书",
+        "设备",
+        "断路器",
+        "标准",
+        "条款",
+    ]
+    strong = [line for line in cleaned_lines if any(k in line for k in keywords)]
+    pool = strong or cleaned_lines
+
+    selected: list[str] = []
+    for line in pool:
+        if _readable_ratio(line) < 0.6:
+            continue
+        if len(line) < 4:
+            continue
+        selected.append(line)
+        joined = "；".join(selected)
+        if len(joined) >= limit:
+            break
+
+    if not selected:
+        fallback = _normalize_line(str(text or ""))
+        if _readable_ratio(fallback) < 0.55:
+            return ""
+        return fallback[:limit]
+
+    return "；".join(selected)[:limit]
+
+
 def _parse_amount_rmb(text: str) -> tuple[str | None, float | None]:
     raw = _find(r"(?:合同金额|合同价|中标价)[:：\s]*([0-9,.]+\s*(?:亿元|万元|万|元)?)", text)
     if not raw:
@@ -90,7 +176,7 @@ def extract_assets_from_chapter(text: str, page_no: int) -> list[dict[str, Any]]
     ):
         return []
 
-    excerpt = text.strip().replace("\n", " ")[:220]
+    excerpt = _build_readable_excerpt(text, limit=220)
     assets: list[dict[str, Any]] = []
 
     assets.append(

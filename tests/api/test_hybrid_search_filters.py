@@ -38,6 +38,8 @@ class TestHybridSearchFilters(unittest.TestCase):
             point_id="ck1",
             vector=[0.1, 0.2],
             payload={
+                "doc_id": "doc_a",
+                "version_id": "ver_a",
                 "doc_name": "demo.pdf",
                 "page_start": 3,
                 "page_end": 3,
@@ -60,6 +62,75 @@ class TestHybridSearchFilters(unittest.TestCase):
         self.assertIn("doc_name", c)
         self.assertIn("page_start", c)
         self.assertIn("excerpt", c)
+
+    def test_hybrid_search_applies_extra_search_filter(self) -> None:
+        repo = InMemoryQdrantRepo()
+        repo.upsert(
+            point_id="ck_doc_a",
+            vector=[0.1, 0.2],
+            payload={
+                "doc_id": "doc_a",
+                "version_id": "ver_a",
+                "doc_name": "a.pdf",
+                "page_start": 1,
+                "page_end": 1,
+                "excerpt": "电容器章节A",
+            },
+        )
+        repo.upsert(
+            point_id="ck_doc_b",
+            vector=[0.2, 0.3],
+            payload={
+                "doc_id": "doc_b",
+                "version_id": "ver_b",
+                "doc_name": "b.pdf",
+                "page_start": 1,
+                "page_end": 1,
+                "excerpt": "电容器章节B",
+            },
+        )
+
+        result = hybrid_search(
+            question="电容器",
+            repo=repo,
+            entity_index=DummyEntityIndex(),
+            top_k=10,
+            search_filter={"must": [{"key": "version_id", "match": {"value": "ver_b"}}]},
+        )
+        self.assertEqual(len(result["citations"]), 1)
+        self.assertEqual(result["citations"][0].get("doc_name"), "b.pdf")
+
+    def test_hybrid_search_uses_keyword_recall_when_vector_empty(self) -> None:
+        class _RepoWithKeyword:
+            def search(self, query_vector, filter_json=None, limit=5):
+                return []
+
+            def keyword_search(self, query_text, filter_json=None, limit=20):
+                return [
+                    {
+                        "id": "kw1",
+                        "score": 10.0,
+                        "payload": {
+                            "doc_name": "spec.pdf",
+                            "page_start": 11,
+                            "page_end": 11,
+                            "excerpt": "11.4.1 串联电容补偿装置",
+                            "chunk_text": "11.4.1 串联电容补偿装置",
+                        },
+                    }
+                ]
+
+            def delete_by_version(self, version_id: str):
+                return None
+
+        result = hybrid_search(
+            question="11.4.1 串联电容补偿装置",
+            repo=_RepoWithKeyword(),
+            entity_index=DummyEntityIndex(),
+            top_k=5,
+        )
+        self.assertEqual(len(result["citations"]), 1)
+        self.assertEqual(result["citations"][0].get("doc_name"), "spec.pdf")
 
 
 if __name__ == "__main__":

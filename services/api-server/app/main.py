@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.admin_docs import router as admin_docs_router
 from app.api.admin_eval import router as admin_eval_router
 from app.api.admin_jobs import router as admin_jobs_router
+from app.api.admin_connectivity import router as admin_connectivity_router
 from app.api.chat import router as chat_router
 from app.api.search import router as search_router
 from app.api.upload import router as upload_router
@@ -33,6 +34,7 @@ app.include_router(chat_router)
 app.include_router(admin_eval_router)
 app.include_router(admin_jobs_router)
 app.include_router(admin_docs_router)
+app.include_router(admin_connectivity_router)
 
 
 @app.get("/health")
