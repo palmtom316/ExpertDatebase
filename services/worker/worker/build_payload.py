@@ -17,7 +17,12 @@ def unique(items: list[str]) -> list[str]:
 
 
 def make_excerpt(text: str, limit: int = 200) -> str:
-    return text.strip().replace("\n", " ")[:limit]
+    s = str(text or "")
+    # Strip OCR artifacts that pollute retrieval snippets.
+    s = re.sub(r"table\s+images/\S+", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:limit]
 
 
 def collect_person_names(ie_assets: list[dict[str, Any]], relations_light: list[dict[str, Any]], text: str) -> list[str]:
@@ -78,7 +83,7 @@ def infer_capacity_mva(ie_assets: list[dict[str, Any]], text: str) -> float | No
 
 
 def infer_clause_no(text: str) -> str | None:
-    m = re.search(r"\b(\d{1,2}(?:\.\d+){1,4})\b", str(text or ""))
+    m = re.search(r"(?<!\d)(\d{1,2}(?:\.\d+){1,4}(?:\([0-9A-Za-z]+\))?)(?!\d)", str(text or ""))
     return m.group(1) if m else None
 
 
@@ -104,6 +109,15 @@ def infer_certificate_no(ie_assets: list[dict[str, Any]], text: str) -> str | No
     return m.group(1).upper().strip() if m else None
 
 
+def infer_is_mandatory(ie_assets: list[dict[str, Any]], text: str) -> bool:
+    for asset in ie_assets:
+        value = (asset.get("data_json") or {}).get("is_mandatory")
+        if isinstance(value, bool):
+            return value
+    raw = str(text or "")
+    return bool(re.search(r"(强制性条文|必须|不得|严禁|应当)", raw))
+
+
 def build_payload(
     chunk: dict[str, Any],
     ie_assets: list[dict[str, Any]],
@@ -121,6 +135,9 @@ def build_payload(
         "page_end": chunk["page_end"],
         "doc_type": chunk.get("doc_type", "unknown"),
         "page_type": page_type or "other",
+        "source_type": chunk.get("source_type", "text"),
+        "table_id": chunk.get("table_id"),
+        "row_index": chunk.get("row_index"),
         "has_citation": True,
         "excerpt": make_excerpt(chunk.get("text", "")),
         "chunk_text": chunk.get("text", ""),
@@ -163,7 +180,10 @@ def build_payload(
     payload["val_contract_amount_w"] = infer_amount_wan(ie_assets, chunk.get("text", ""))
     payload["val_line_length_km"] = infer_line_km(ie_assets, chunk.get("text", ""))
     payload["val_capacity_mva"] = infer_capacity_mva(ie_assets, chunk.get("text", ""))
-    payload["clause_no"] = infer_clause_no(chunk.get("text", ""))
+    clause_id = str(chunk.get("clause_id") or "").strip() or infer_clause_no(chunk.get("text", ""))
+    payload["clause_id"] = clause_id
+    payload["clause_no"] = clause_id
+    payload["is_mandatory"] = infer_is_mandatory(ie_assets, chunk.get("text", ""))
     payload["standard_no"] = infer_standard_no(ie_assets, chunk.get("text", ""))
     payload["certificate_no"] = infer_certificate_no(ie_assets, chunk.get("text", ""))
 

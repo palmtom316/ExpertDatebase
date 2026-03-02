@@ -13,7 +13,7 @@ from uuid import UUID, uuid5, NAMESPACE_URL
 
 import requests
 
-from app.services.filter_parser import parse_filter_spec
+from app.services.filter_parser import extract_clause_ids, parse_filter_spec
 from app.services.retrieval.graphrag_client import GraphRAGClient
 from app.services.retrieval.sparse.pg_bm25 import PgBM25SparseRetriever
 from app.services.retrieval.sparse.sirchmunk_client import SirchmunkClient
@@ -334,10 +334,10 @@ class SimpleEmbeddingClient:
                 )
         except Exception as exc:  # noqa: BLE001
             _log.warning(
-                "embedding failed, falling back to stub",
-                provider=provider,
-                model=cfg.get("model"),
-                error=str(exc),
+                "embedding failed, falling back to stub provider=%s model=%s error=%s",
+                provider,
+                cfg.get("model"),
+                str(exc),
             )
             return self._stub(text)
         return self._stub(text)
@@ -573,6 +573,45 @@ def _keyword_score(text: str, terms: list[str]) -> float:
     return score
 
 
+def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(hits) <= 1:
+        return hits
+    terms = _extract_query_terms(question)
+    if not terms:
+        return hits
+
+    question_norm = re.sub(r"\s+", "", str(question or "").lower())
+    table_query = _is_table_query(question)
+    scored: list[tuple[float, dict[str, Any]]] = []
+
+    for idx, hit in enumerate(hits):
+        payload = (hit or {}).get("payload") or {}
+        text = _payload_search_text(payload)
+        text_norm = re.sub(r"\s+", "", text.lower())
+
+        lexical = _keyword_score(text, terms)
+        exact = 0.0
+        if question_norm and len(question_norm) <= 32 and question_norm in text_norm:
+            exact += 6.0
+        for term in terms:
+            if len(term) >= 3 and term in text:
+                exact += 0.3
+        if table_query:
+            source_type = str(payload.get("source_type") or "").strip().lower()
+            page_type = str(payload.get("page_type") or "").strip().lower()
+            if source_type in {"table_row", "cross_page_table_row"}:
+                exact += 4.0
+            if "table" in page_type:
+                exact += 2.0
+
+        base = float((hit or {}).get("score") or 0.0)
+        final_score = lexical * 5.0 + exact + base * 0.05 - idx * 1e-4
+        scored.append((final_score, hit))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item for _, item in scored]
+
+
 def _fuse_rrf(result_lists: list[list[dict[str, Any]]], limit: int, k: int = 60) -> list[dict[str, Any]]:
     acc: dict[str, dict[str, Any]] = {}
     for lst in result_lists:
@@ -607,6 +646,90 @@ def _merge_filters(
     return {"must": must} if must else None
 
 
+def _remove_clause_constraints(filter_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(filter_json, dict):
+        return None
+    must = list(filter_json.get("must") or [])
+    kept = [cond for cond in must if str(cond.get("key") or "") not in {"clause_id", "clause_no"}]
+    return {"must": kept} if kept else None
+
+
+def _chapter_prefixes_from_question(question: str, clause_hits: list[str]) -> list[str]:
+    q = str(question or "").lower()
+    if not clause_hits or not any(token in q for token in ["章", "章节", "chapter"]):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in clause_hits:
+        clause = re.sub(r"\([0-9A-Za-z]+\)$", "", str(raw or "").strip())
+        if not clause:
+            continue
+        parts = clause.split(".")
+        if len(parts) < 2:
+            continue
+        # Treat chapter-like query as two-level prefix (e.g. 4.3 -> 4.3.*).
+        prefix = f"{parts[0]}.{parts[1]}"
+        if prefix in seen:
+            continue
+        seen.add(prefix)
+        out.append(prefix)
+    return out
+
+
+def _filter_hits_by_clause_prefix(hits: list[dict[str, Any]], prefixes: list[str]) -> list[dict[str, Any]]:
+    if not hits or not prefixes:
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for hit in hits:
+        payload = (hit or {}).get("payload") or {}
+        clause_raw = str(payload.get("clause_id") or payload.get("clause_no") or "").strip()
+        clause = re.sub(r"\([0-9A-Za-z]+\)$", "", clause_raw)
+        text = _payload_search_text(payload)
+        matched = False
+        for p in prefixes:
+            if clause:
+                if clause == p or clause.startswith(f"{p}."):
+                    matched = True
+                    break
+                # When clause id exists but prefix differs, reject directly to avoid cross-chapter noise.
+                continue
+            pat = re.compile(rf"(?<!\d){re.escape(p)}(?:\.\d+)*(?:\([0-9A-Za-z]+\))?(?!\d)")
+            if pat.search(text):
+                matched = True
+                break
+        if not matched:
+            continue
+        hit_id = str((hit or {}).get("id") or "")
+        if hit_id and hit_id in seen:
+            continue
+        if hit_id:
+            seen.add(hit_id)
+        out.append(hit)
+    return out
+
+
+def _dedupe_hits_by_id(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for hit in hits:
+        hid = str((hit or {}).get("id") or "")
+        if hid and hid in seen:
+            continue
+        if hid:
+            seen.add(hid)
+        out.append(hit)
+    return out
+
+
+def _is_table_query(question: str) -> bool:
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+    hints = ["表", "表格", "续表", "跨页", "行", "列", "参数表", "table", "rows", "columns"]
+    return any(token in q for token in hints)
+
+
 def _to_citation(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "doc_name": payload.get("doc_name", ""),
@@ -616,6 +739,11 @@ def _to_citation(payload: dict[str, Any]) -> dict[str, Any]:
         "excerpt": payload.get("excerpt", ""),
         "chunk_text": payload.get("chunk_text", ""),
         "route": payload.get("route", "dense"),
+        "source_type": payload.get("source_type", ""),
+        "page_type": payload.get("page_type", ""),
+        "table_id": payload.get("table_id"),
+        "row_index": payload.get("row_index"),
+        "clause_id": payload.get("clause_id") or payload.get("clause_no"),
     }
 
 
@@ -650,6 +778,12 @@ def _normalize_route_hits(items: list[dict[str, Any]], route: str) -> list[dict[
             "chunk_text": str(item.get("chunk_text") or excerpt),
             "route": route,
             "source_path": str(item.get("source_path") or ""),
+            "source_type": str(item.get("source_type") or ""),
+            "page_type": str(item.get("page_type") or ""),
+            "table_id": item.get("table_id"),
+            "row_index": item.get("row_index"),
+            "clause_id": item.get("clause_id") or item.get("clause_no"),
+            "clause_no": item.get("clause_no") or item.get("clause_id"),
         }
         hits.append({"id": hit_id, "score": float(item.get("score") or 0.0), "payload": payload})
     return hits
@@ -699,6 +833,104 @@ def hybrid_search(
 ) -> dict[str, Any]:
     parsed_filter, sparse_query, dense_query_text = parse_filter_spec(question, entity_index)
     filter_json = _merge_filters(parsed_filter, search_filter)
+    clause_hits = extract_clause_ids(question)
+    chapter_prefixes = _chapter_prefixes_from_question(question=question, clause_hits=clause_hits)
+    if chapter_prefixes:
+        chapter_filter = _remove_clause_constraints(filter_json)
+        chapter_hits: list[dict[str, Any]] = []
+        chapter_limit = max(top_k * 8, int(os.getenv("HYBRID_CHAPTER_TOP_K", "96")))
+        try:
+            chapter_hits = repo.keyword_search(
+                query_text=f"{question} {' '.join(chapter_prefixes)}",
+                filter_json=chapter_filter,
+                limit=chapter_limit,
+            )
+        except Exception:  # noqa: BLE001
+            chapter_hits = []
+        # Loose pass: prefix-only recall helps pull same-chapter tables/continuations.
+        try:
+            chapter_hits_loose = repo.keyword_search(
+                query_text=" ".join(chapter_prefixes),
+                filter_json=chapter_filter,
+                limit=chapter_limit,
+            )
+        except Exception:  # noqa: BLE001
+            chapter_hits_loose = []
+        chapter_hits = _dedupe_hits_by_id(chapter_hits + chapter_hits_loose)
+        chapter_hits = _filter_hits_by_clause_prefix(chapter_hits, chapter_prefixes)
+        if chapter_hits:
+            for hit in chapter_hits:
+                payload = (hit or {}).get("payload")
+                if isinstance(payload, dict):
+                    payload.setdefault("route", "chapter_prefix")
+            hits = chapter_hits
+            if _env_enabled("ENABLE_RERANK", default=True):
+                hits = RuntimeRerankClient().rerank_hits(question=question, hits=hits, runtime_config=runtime_config)
+            if _env_enabled("HYBRID_POST_KEYWORD_BOOST", default=True):
+                hits = _post_keyword_boost_hits(question=question, hits=hits)
+            hits = hits[:top_k]
+            citations = [_to_citation((h or {}).get("payload", {})) for h in hits]
+            return {
+                "hits": hits,
+                "citations": citations,
+                "filter_json": chapter_filter,
+                "debug": {
+                    "route_counts": {"chapter_prefix": len(chapter_hits)},
+                    "degraded_routes": {},
+                },
+            }
+
+    if clause_hits:
+        clause_id_filter = _merge_filters(
+            filter_json,
+            {"must": [{"key": "clause_id", "match": {"any": clause_hits}}]},
+        )
+        clause_no_filter = _merge_filters(
+            filter_json,
+            {"must": [{"key": "clause_no", "match": {"any": clause_hits}}]},
+        )
+        clause_hits_exact: list[dict[str, Any]] = []
+        try:
+            clause_hits_exact = repo.keyword_search(
+                query_text=" ".join(clause_hits),
+                filter_json=clause_id_filter,
+                limit=max(top_k * 4, int(os.getenv("HYBRID_CLAUSE_TOP_K", "48"))),
+            )
+        except Exception:  # noqa: BLE001
+            clause_hits_exact = []
+        if not clause_hits_exact:
+            try:
+                clause_hits_exact = repo.keyword_search(
+                    query_text=" ".join(clause_hits),
+                    filter_json=clause_no_filter,
+                    limit=max(top_k * 4, int(os.getenv("HYBRID_CLAUSE_TOP_K", "48"))),
+                )
+            except Exception:  # noqa: BLE001
+                clause_hits_exact = []
+        if clause_hits_exact:
+            for hit in clause_hits_exact:
+                payload = (hit or {}).get("payload")
+                if isinstance(payload, dict):
+                    payload.setdefault("route", "clause_exact")
+            hits = clause_hits_exact
+            if _env_enabled("ENABLE_RERANK", default=True):
+                hits = RuntimeRerankClient().rerank_hits(question=question, hits=hits, runtime_config=runtime_config)
+            if _env_enabled("HYBRID_POST_KEYWORD_BOOST", default=True):
+                hits = _post_keyword_boost_hits(question=question, hits=hits)
+            hits = hits[:top_k]
+            citations = [_to_citation((h or {}).get("payload", {})) for h in hits]
+            return {
+                "hits": hits,
+                "citations": citations,
+                "filter_json": clause_no_filter,
+                "debug": {
+                    "route_counts": {"clause_exact": len(clause_hits_exact)},
+                    "degraded_routes": {},
+                },
+            }
+        # If exact route yields nothing, keep clause fallback filter for dense/keyword routes.
+        filter_json = clause_no_filter
+
     query_vector = SimpleEmbeddingClient().embed_text(dense_query_text, runtime_config=runtime_config)
     vector_top_k = max(top_k, int(os.getenv("HYBRID_VECTOR_TOP_K", "24")))
     keyword_top_k = max(top_k, int(os.getenv("HYBRID_KEYWORD_TOP_K", "24")))
@@ -731,7 +963,7 @@ def hybrid_search(
         route_lists.append(keyword_hits)
 
     sparse_candidates: list[dict[str, Any]] = []
-    if _env_enabled("ENABLE_PG_BM25", default=False):
+    if _env_enabled("ENABLE_PG_BM25", default=True):
         try:
             sparse_candidates.extend(
                 PgBM25SparseRetriever().search(query_text=sparse_query, top_n=sparse_top_k, filters=filter_json)
@@ -785,6 +1017,8 @@ def hybrid_search(
     hits = _fuse_rrf(route_lists, limit=fused_limit)
     if _env_enabled("ENABLE_RERANK", default=True):
         hits = RuntimeRerankClient().rerank_hits(question=question, hits=hits, runtime_config=runtime_config)
+    if _env_enabled("HYBRID_POST_KEYWORD_BOOST", default=True):
+        hits = _post_keyword_boost_hits(question=question, hits=hits)
     hits = hits[:top_k]
 
     citations = [_to_citation((h or {}).get("payload", {})) for h in hits]

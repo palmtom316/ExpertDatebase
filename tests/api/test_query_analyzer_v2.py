@@ -31,8 +31,9 @@ def test_query_analyzer_v2_extracts_clause_standard_and_certificate() -> None:
     assert "rel_person_role" in keys
     assert "val_voltage_kv" in keys
     assert "clause_no" in keys
-    assert "standard_no" in keys
     assert "certificate_no" in keys
+    clause_filter = next(item for item in must if item["key"] == "clause_no")
+    assert "11.4.1" in (clause_filter.get("match") or {}).get("any", [])
     assert "11.4.1" in sparse_query
     assert "GB 50147-2010" in sparse_query
     assert "ZJ-A-2024-009" in sparse_query
@@ -46,3 +47,16 @@ def test_query_analyzer_v2_handles_amount_in_yi() -> None:
     amount = next(item for item in filter_json["must"] if item["key"] == "val_contract_amount_w")
     assert amount["range"]["gte"] == 25000
     assert "2.5亿" in sparse_query
+
+
+def test_query_analyzer_v2_extracts_sub_clause_and_mandatory_filter() -> None:
+    question = "请给出 4.12.1(3) 强制性条文原文，必须执行"
+    filter_json, sparse_query, _ = parse_filter_spec(question, DummyEntityIndex())
+    assert filter_json is not None
+    must = filter_json["must"]
+    clause_filter = next(item for item in must if item["key"] == "clause_no")
+    assert "4.12.1(3)" in (clause_filter.get("match") or {}).get("any", [])
+    mandatory_filter = next(item for item in must if item["key"] == "is_mandatory")
+    assert (mandatory_filter.get("match") or {}).get("value") is True
+    assert "4.12.1(3)" in sparse_query
+    assert "强制性条文" in sparse_query

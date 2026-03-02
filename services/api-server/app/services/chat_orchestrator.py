@@ -10,11 +10,14 @@ from app.services.llm_router import LLMRouter
 from app.services.search_service import SearchRepo, hybrid_search
 
 
-def _citation_key(c: dict[str, Any]) -> tuple[str, int | None, int | None]:
+def _citation_key(c: dict[str, Any]) -> tuple[str, int | None, int | None, str, str, str]:
     doc_name = str(c.get("doc_name") or "").strip()
     page_start = c.get("page_start")
     page_end = c.get("page_end")
-    return (doc_name, page_start, page_end if page_end is not None else page_start)
+    source_type = str(c.get("source_type") or "").strip().lower()
+    clause_id = str(c.get("clause_id") or "").strip()
+    table_id = str(c.get("table_id") or "").strip()
+    return (doc_name, page_start, page_end if page_end is not None else page_start, source_type, clause_id, table_id)
 
 
 def _merge_text(existing: str, extra: str, max_len: int = 500) -> str:
@@ -71,8 +74,8 @@ def _pick_best_evidence_text(citation: dict[str, Any], max_len: int = 220) -> st
 
 
 def _dedupe_citations(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[tuple[str, int | None, int | None], dict[str, Any]] = {}
-    order: list[tuple[str, int | None, int | None]] = []
+    merged: dict[tuple[str, int | None, int | None, str, str, str], dict[str, Any]] = {}
+    order: list[tuple[str, int | None, int | None, str, str, str]] = []
     for raw in citations:
         c = dict(raw or {})
         key = _citation_key(c)
@@ -148,7 +151,7 @@ def _build_qa_prompt(question: str, citations: list[dict[str, Any]]) -> str:
 
 def _stub_specific_answer(question: str, citations: list[dict[str, Any]]) -> str:
     lines: list[str] = []
-    for c in citations[:3]:
+    for c in citations[:8]:
         doc_name = str(c.get("doc_name") or "unknown")
         page = c.get("page_start")
         excerpt = _pick_best_evidence_text(c, max_len=120)

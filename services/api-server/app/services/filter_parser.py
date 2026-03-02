@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
 ROLE_KEYWORDS = ["项目经理", "技术负责人", "总工", "安全员", "质量员"]
-_CLAUSE_PAT = re.compile(r"(?<!\d)(\d{1,2}(?:\.\d+){1,4})(?!\d)")
+_CLAUSE_PAT = re.compile(r"(?<!\d)(\d{1,2}(?:\.\d+){1,4}(?:\([0-9A-Za-z]+\))?)(?!\d)")
 _STANDARD_PAT = re.compile(
     r"(?<![A-Za-z0-9])((?:GB|DL/T|DL|NB/T|IEC|ISO)\s*[-A-Z]*\s*\d{2,6}(?:-\d{4})?)(?![A-Za-z0-9])",
     flags=re.IGNORECASE,
 )
 _CERT_PAT = re.compile(r"(?<![A-Z0-9])([A-Z]{1,6}(?:-[A-Z0-9]{1,10}){2,})(?![A-Z0-9])")
+_MANDATORY_HINT = re.compile(r"(强制性条文|强制条文|必须执行|一票否决|不得|必须)")
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -35,6 +37,11 @@ def parse_amount_to_wan(text: str) -> float | None:
     if unit == "亿":
         return value * 10000
     return value
+
+
+def extract_clause_ids(text: str) -> list[str]:
+    q = str(text or "").strip()
+    return _dedupe([m.group(1) for m in _CLAUSE_PAT.finditer(q)])
 
 
 def parse_filter_spec(question: str, entity_index: Any) -> tuple[dict[str, Any] | None, str, str]:
@@ -65,14 +72,21 @@ def parse_filter_spec(question: str, entity_index: Any) -> tuple[dict[str, Any] 
             must.append({"key": "rel_person_role", "match": {"any": [f"{pid}|{role_hit}"]}})
             sparse_tokens.append(role_hit)
 
-    clause_hits = _dedupe([m.group(1) for m in _CLAUSE_PAT.finditer(q)])
-    for clause in clause_hits:
-        must.append({"key": "clause_no", "match": {"value": clause}})
+    clause_hits = extract_clause_ids(q)
+    if clause_hits:
+        # Use ANY semantics for multi-clause queries to avoid impossible AND match.
+        must.append({"key": "clause_no", "match": {"any": clause_hits}})
     sparse_tokens.extend(clause_hits)
 
+    if _MANDATORY_HINT.search(q):
+        must.append({"key": "is_mandatory", "match": {"value": True}})
+        sparse_tokens.append("强制性条文")
+
     standard_hits = _dedupe([m.group(1).strip().upper() for m in _STANDARD_PAT.finditer(q)])
+    strict_standard = str(os.getenv("ENABLE_STANDARD_STRICT_FILTER", "0")).strip().lower() in {"1", "true", "yes"}
     for standard in standard_hits:
-        must.append({"key": "standard_no", "match": {"value": standard}})
+        if strict_standard:
+            must.append({"key": "standard_no", "match": {"value": standard}})
     sparse_tokens.extend(standard_hits)
 
     cert_hits = _dedupe([m.group(1).strip().upper() for m in _CERT_PAT.finditer(q)])

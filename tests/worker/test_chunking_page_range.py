@@ -66,3 +66,61 @@ def test_chunking_preserves_clause_identifier() -> None:
     )
     assert len(chunks) == 1
     assert "11.4.1" in chunks[0]["text"]
+    assert chunks[0]["clause_id"] == "11.4.1"
+
+
+def test_chunking_splits_multi_clause_block() -> None:
+    chapters = [
+        {
+            "chapter_id": "ch_3",
+            "start_page": 4,
+            "end_page": 4,
+            "blocks": [
+                {
+                    "block_id": "b_4_1",
+                    "page_no": 4,
+                    "text": "3.0.1 电气设备应满足试验要求。\n3.0.2 试验持续时间应为1min。",
+                }
+            ],
+            "text": "unused",
+        }
+    ]
+    chunks = chunk_chapters(
+        doc_id="doc_1",
+        version_id="ver_1",
+        chapters=chapters,
+        min_chars=1,
+        max_chars=300,
+        overlap_chars=0,
+    )
+    clause_ids = [str(c.get("clause_id") or "") for c in chunks]
+    assert "3.0.1" in clause_ids
+    assert "3.0.2" in clause_ids
+
+
+def test_chunking_keeps_sub_clause_identifier() -> None:
+    chapters = [
+        {
+            "chapter_id": "ch_4",
+            "start_page": 22,
+            "end_page": 22,
+            "blocks": [
+                {
+                    "block_id": "b_22_1",
+                    "page_no": 22,
+                    "text": "4.12.1(3) 试验时应将插件拔出或将其两端短接。",
+                }
+            ],
+            "text": "unused",
+        }
+    ]
+    chunks = chunk_chapters(
+        doc_id="doc_1",
+        version_id="ver_1",
+        chapters=chapters,
+        min_chars=1,
+        max_chars=200,
+        overlap_chars=0,
+    )
+    assert len(chunks) == 1
+    assert chunks[0]["clause_id"] == "4.12.1(3)"

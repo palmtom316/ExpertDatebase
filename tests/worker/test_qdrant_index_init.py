@@ -7,7 +7,7 @@ WORKER_SERVICE = ROOT / 'services' / 'worker'
 if str(WORKER_SERVICE) not in sys.path:
     sys.path.insert(0, str(WORKER_SERVICE))
 
-from worker.qdrant_index import ensure_payload_indexes
+from worker.qdrant_index import DEFAULT_PAYLOAD_INDEXES, ensure_payload_indexes
 
 
 @patch('worker.qdrant_index.requests.put')
@@ -23,3 +23,5 @@ def test_ensure_payload_indexes_posts_index_requests(m_put: Mock) -> None:
     assert m_put.call_count >= 2
     first_call = m_put.call_args_list[0]
     assert '/collections/chunks_v1/index' in first_call.kwargs['url']
+    assert any(spec.get("field_name") == "clause_id" for spec in DEFAULT_PAYLOAD_INDEXES)
+    assert any(spec.get("field_name") == "is_mandatory" and spec.get("field_schema") == "bool" for spec in DEFAULT_PAYLOAD_INDEXES)

@@ -46,6 +46,68 @@ class TestPayloadBuilder(unittest.TestCase):
         self.assertEqual(payload["version_id"], "ver1")
         self.assertEqual(payload["val_voltage_kv"], 110)
         self.assertEqual(payload["val_contract_amount_w"], 5000)
+        self.assertEqual(payload["source_type"], "text")
+
+    def test_build_payload_excerpt_strips_table_image_and_html_noise(self) -> None:
+        chunk = {
+            "doc_id": "doc1",
+            "version_id": "ver1",
+            "doc_name": "demo.pdf",
+            "chunk_id": "ck2",
+            "chapter_id": "ch1",
+            "page_start": 10,
+            "page_end": 10,
+            "doc_type": "规范规程",
+            "text": "table images/abc123.jpg <table><tr><td>额定电压</td></tr></table> 本标准适用范围为安装交接试验。",
+            "block_ids": ["b_10_1"],
+        }
+        payload = build_payload(chunk, [], [], DummyEntityIndex(), "other")
+        excerpt = str(payload.get("excerpt") or "")
+        self.assertNotIn("table images/", excerpt)
+        self.assertNotIn("<table>", excerpt)
+        self.assertIn("本标准适用范围", excerpt)
+
+    def test_build_payload_uses_chunk_clause_id(self) -> None:
+        chunk = {
+            "doc_id": "doc1",
+            "version_id": "ver1",
+            "doc_name": "demo.pdf",
+            "chunk_id": "ck3",
+            "chapter_id": "ch1",
+            "page_start": 12,
+            "page_end": 12,
+            "doc_type": "规范规程",
+            "text": "试验电压应符合规定。",
+            "clause_id": "3.2.1",
+            "source_type": "table_row",
+            "table_id": "t_12_1",
+            "row_index": 2,
+            "block_ids": ["b_12_1"],
+        }
+        payload = build_payload(chunk, [], [], DummyEntityIndex(), "power_param_table")
+        self.assertEqual(payload["clause_id"], "3.2.1")
+        self.assertEqual(payload["clause_no"], "3.2.1")
+        self.assertEqual(payload["source_type"], "table_row")
+        self.assertEqual(payload["table_id"], "t_12_1")
+        self.assertEqual(payload["row_index"], 2)
+
+    def test_build_payload_infers_sub_clause_and_mandatory(self) -> None:
+        chunk = {
+            "doc_id": "doc1",
+            "version_id": "ver1",
+            "doc_name": "demo.pdf",
+            "chunk_id": "ck4",
+            "chapter_id": "ch1",
+            "page_start": 22,
+            "page_end": 22,
+            "doc_type": "规范规程",
+            "text": "4.12.1(3) 试验时必须将插件拔出。",
+            "block_ids": ["b_22_1"],
+        }
+        payload = build_payload(chunk, [], [], DummyEntityIndex(), "other")
+        self.assertEqual(payload["clause_id"], "4.12.1(3)")
+        self.assertEqual(payload["clause_no"], "4.12.1(3)")
+        self.assertTrue(payload["is_mandatory"])
 
 
 if __name__ == "__main__":
