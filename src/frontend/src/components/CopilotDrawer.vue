@@ -74,6 +74,9 @@
                   <span class="evidence-page">第 {{ asset.source_page || 1 }} 页</span>
                 </div>
                 <div class="evidence-card-body">{{ asset.source_excerpt || "" }}</div>
+                <div class="evidence-card-actions">
+                  <button class="btn btn-ghost btn-sm" type="button" @click="$emit('openEvidenceSource', asset)">定位原文</button>
+                </div>
                 <div v-if="Number(asset.merged_count || 1) > 1" class="evidence-card-foot">
                   合并 {{ Number(asset.merged_count) }} 条片段
                 </div>
@@ -93,7 +96,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 
 const props = defineProps({
   collapsed: { type: Boolean, default: true },
@@ -104,7 +107,7 @@ const props = defineProps({
   evidenceQuality: { type: Object, default: () => ({ level: "empty", label: "待加载" }) },
 });
 
-const emit = defineEmits(["close", "clearHistory", "sendChat"]);
+const emit = defineEmits(["close", "clearHistory", "sendChat", "openEvidenceSource"]);
 
 const pageSize = 8;
 const page = ref(1);
@@ -116,6 +119,14 @@ const pagedEvidence = computed(() => {
   const start = (p - 1) * pageSize;
   return props.evidence.slice(start, start + pageSize);
 });
+
+watch(
+  () => props.evidence,
+  () => {
+    page.value = 1;
+  },
+  { deep: true }
+);
 
 function submitChat() {
   const q = questionLocal.value.trim();

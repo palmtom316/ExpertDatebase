@@ -43,7 +43,7 @@ def run_forever(max_idle_cycles: int | None = None) -> None:
     try:
         _init_qdrant_indexes()
     except Exception as exc:  # noqa: BLE001
-        _log.warning("qdrant index init failed", error=str(exc))
+        _log.warning("qdrant index init failed: %s", str(exc))
 
     runtime = WorkerRuntime(
         storage=build_storage_from_env(),
@@ -57,7 +57,7 @@ def run_forever(max_idle_cycles: int | None = None) -> None:
 
     idle = 0
     poll_timeout = int(os.getenv("WORKER_POLL_TIMEOUT", "5"))
-    _log.info("worker started", poll_timeout=poll_timeout)
+    _log.info("worker started (poll_timeout=%s)", poll_timeout)
 
     while True:
         job = queue.pop_document_job(timeout_s=poll_timeout)
@@ -74,17 +74,17 @@ def run_forever(max_idle_cycles: int | None = None) -> None:
         try:
             summary = process_document_job(job, runtime)
             _log.info(
-                "document processed",
-                doc_id=doc_id,
-                version_id=version_id,
-                chunks=summary.get("chunks"),
-                upserted=summary.get("upserted"),
-                assets=summary.get("assets_extracted"),
+                "document processed doc_id=%s version_id=%s chunks=%s upserted=%s assets=%s",
+                doc_id,
+                version_id,
+                summary.get("chunks"),
+                summary.get("upserted"),
+                summary.get("assets_extracted"),
             )
         except Exception as exc:  # noqa: BLE001
             if version_id:
                 runtime.doc_registry.mark_version_status(version_id=version_id, status="failed", notes={"error": str(exc)})
-            _log.error("document processing failed", doc_id=doc_id, version_id=version_id, error=str(exc))
+            _log.error("document processing failed doc_id=%s version_id=%s error=%s", doc_id, version_id, str(exc))
             time.sleep(1)
 
 

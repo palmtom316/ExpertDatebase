@@ -50,7 +50,7 @@
       </nav>
     </aside>
 
-    <input ref="pdfInputRef" class="hidden-input" type="file" accept=".pdf,application/pdf" @change="onFileChange" />
+    <input ref="pdfInputRef" class="hidden-input" type="file" multiple accept=".pdf,application/pdf" @change="onFileChange" />
 
     <!-- Main Console -->
     <main class="main-console">
@@ -72,6 +72,7 @@
           :doc-type-options="docTypeOptions"
           @select-doc="selectDocRow"
           @load-artifacts="loadArtifacts"
+          @open-evidence-viewer="openEvidenceViewerFromDoc"
           @add-to-eval="addToEvalDataset"
           @reprocess="reprocessDoc"
           @delete-doc="deleteDoc"
@@ -91,6 +92,7 @@
       @close="collapseCopilot"
       @clear-history="clearCopilotHistory"
       @send-chat="sendChat"
+      @open-evidence-source="openEvidenceViewerFromAsset"
     />
 
     <SettingsDrawer
@@ -102,6 +104,16 @@
       @save="saveSettings"
       @test-conn="onTestConn"
     />
+
+    <EvidenceViewerModal
+      :open="evidenceViewerOpen"
+      :loading="evidenceViewerLoading"
+      :title="evidenceViewerTitle"
+      :pdf-url="evidenceViewerPdfUrl"
+      :evidence="reviewEvidence"
+      :initial-page="evidenceViewerPage"
+      @close="evidenceViewerOpen = false"
+    />
   </div>
 </template>
 
@@ -112,7 +124,14 @@ import DocList from "./components/DocList.vue";
 import QualityPanel from "./components/QualityPanel.vue";
 import CopilotDrawer from "./components/CopilotDrawer.vue";
 import SettingsDrawer from "./components/SettingsDrawer.vue";
-import { isNarrowViewport } from "./utils/copilotVisibility.js";
+import EvidenceViewerModal from "./components/EvidenceViewerModal.vue";
+import { createCopilotAutoCollapseHandler, isNarrowViewport } from "./utils/copilotVisibility.js";
+import {
+  hasRuntimeSettings as hasRuntimeSettingsValue,
+  normalizeRuntimeSettings,
+  toRuntimePayload,
+} from "./utils/runtimeSettings.js";
+import { buildConnectivityRequest, resolveConnectivityMessage } from "./utils/connectivity.js";
 
 const API_BASE = (window.EXPERTDB_API_BASE || "").trim().replace(/\/$/, "");
 const SETTINGS_KEY = "expertdb_runtime_settings_v1";
@@ -126,6 +145,11 @@ const deletingVersionId = ref("");
 const sidebarCollapsed = ref(false);
 const copilotCollapsed = ref(true);
 const settingsDrawerOpen = ref(false);
+const evidenceViewerOpen = ref(false);
+const evidenceViewerLoading = ref(false);
+const evidenceViewerTitle = ref("");
+const evidenceViewerVersionId = ref("");
+const evidenceViewerPage = ref(1);
 const uploadMessage = ref("等待上传 PDF。");
 const uploadMessageMode = ref("info");
 const docsState = ref([]);
@@ -153,26 +177,13 @@ const quality = reactive({
   rows: [],
 });
 
-const settings = reactive({
-  mineru_api_base: "",
-  mineru_api_key: "",
-  llm_provider: "stub",
-  llm_model: "gpt-4o-mini",
-  llm_base_url: "https://api.openai.com/v1",
-  llm_api_key: "",
-  embedding_provider: "stub",
-  embedding_model: "text-embedding-3-small",
-  embedding_base_url: "https://api.openai.com/v1",
-  embedding_api_key: "",
-  rerank_provider: "stub",
-  rerank_model: "BAAI/bge-reranker-v2-m3",
-  rerank_base_url: "https://api.openai.com/v1",
-  rerank_api_key: "",
-  vl_provider: "stub",
-  vl_model: "gpt-4o-mini",
-  vl_base_url: "https://api.openai.com/v1",
-  vl_api_key: "",
+const evidenceViewerPdfUrl = computed(() => {
+  const versionId = String(evidenceViewerVersionId.value || "").trim();
+  if (!versionId) return "";
+  return `${API_BASE}/api/admin/docs/${encodeURIComponent(versionId)}/source-pdf`;
 });
+
+const settings = reactive(normalizeRuntimeSettings({}));
 
 const mineruConn = reactive({ loading: false, ok: null, message: "未测试" });
 const llmConn = reactive({ loading: false, ok: null, message: "未测试" });
@@ -183,6 +194,10 @@ const vlConn = reactive({ loading: false, ok: null, message: "未测试" });
 let pollToken = 0;
 let messageSeq = 0;
 const EVIDENCE_MAX_ITEMS = 80;
+const PENDING_STATUSES = new Set(["uploading", "uploaded", "retry_queued", "processing"]);
+const DOCS_REFRESH_INTERVAL_MS = 5000;
+let docsRefreshTimer = null;
+let docsRefreshRunning = false;
 
 function nextMessageId() {
   messageSeq += 1;
@@ -227,6 +242,34 @@ function canReprocessItem(item) {
   return !["processing", "uploaded", "retry_queued"].includes(status);
 }
 
+function getIndexedChunkCount(item) {
+  const notes = item?.notes && typeof item.notes === "object" ? item.notes : {};
+  const chunks = Number(notes?.chunks || 0);
+  return Number.isFinite(chunks) && chunks > 0 ? Math.floor(chunks) : 0;
+}
+
+function buildReprocessConfirmMessage(item) {
+  const name = item?.doc_name || item?.version_id || "unknown";
+  const status = String(item?.status || "").toLowerCase();
+  const chunks = getIndexedChunkCount(item);
+  const isIndexed = status === "processed" || chunks > 0;
+  if (isIndexed) {
+    const chunkHint = chunks > 0 ? `（当前索引块约 ${chunks} 条）` : "";
+    return `确认重新解析文档：${name}？\n该文档已完成索引${chunkHint}。\n继续将触发重新解析并重建索引，可能覆盖现有结果。`;
+  }
+  return `确认重新解析文档：${name}？`;
+}
+
+function isPendingStatus(status) {
+  return PENDING_STATUSES.has(String(status || "").toLowerCase());
+}
+
+function hasPendingWork(items = docsState.value) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.some((item) => isPendingStatus(item?.status))) return true;
+  return isPendingStatus(uploadMeta.versionStatus);
+}
+
 function normalizeText(value) {  const raw = String(value || "");
   const cleaned = raw
     .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, " ")
@@ -241,6 +284,15 @@ function normalizeDocMatchKey(value) {
     .replace(/\.pdf$/i, "")
     .replace(/[\s\-_/\\.,，。:：;；"'""‘’()（）[\]【】<>《》|]+/g, "")
     .trim();
+}
+
+function extractFailureReason(notes) {
+  if (!notes || typeof notes !== "object") return "";
+  const direct = String(notes.error || "").trim();
+  if (direct) return direct;
+  const prev = notes.previous_notes && typeof notes.previous_notes === "object" ? String(notes.previous_notes.error || "").trim() : "";
+  if (prev) return prev;
+  return "";
 }
 
 function parseDeleteCommand(question) {
@@ -420,58 +472,12 @@ function readSettings() {
 }
 
 function applySettings(payload) {
-  if (!payload || typeof payload !== "object") return;
-  settings.mineru_api_base = payload.mineru_api_base || "";
-  settings.mineru_api_key = payload.mineru_api_key || "";
-  settings.llm_provider = payload.llm_provider || "stub";
-  settings.llm_model = payload.llm_model || "gpt-4o-mini";
-  settings.llm_base_url = payload.llm_base_url || "https://api.openai.com/v1";
-  settings.llm_api_key = payload.llm_api_key || "";
-  settings.embedding_provider = payload.embedding_provider || "stub";
-  settings.embedding_model = payload.embedding_model || "text-embedding-3-small";
-  settings.embedding_base_url = payload.embedding_base_url || "https://api.openai.com/v1";
-  settings.embedding_api_key = payload.embedding_api_key || "";
-  settings.rerank_provider = payload.rerank_provider || "stub";
-  settings.rerank_model = payload.rerank_model || "BAAI/bge-reranker-v2-m3";
-  settings.rerank_base_url = payload.rerank_base_url || "https://api.openai.com/v1";
-  settings.rerank_api_key = payload.rerank_api_key || "";
-  settings.vl_provider = payload.vl_provider || "stub";
-  settings.vl_model = payload.vl_model || "gpt-4o-mini";
-  settings.vl_base_url = payload.vl_base_url || "https://api.openai.com/v1";
-  settings.vl_api_key = payload.vl_api_key || "";
-}
-
-function hasRuntimeSettings(payload) {
-  if (!payload || typeof payload !== "object") return false;
-  return Boolean(
-    String(payload.mineru_api_base || "").trim() ||
-      String(payload.mineru_api_key || "").trim() ||
-      String(payload.llm_api_key || "").trim() ||
-      String(payload.embedding_api_key || "").trim()
-  );
+  const normalized = normalizeRuntimeSettings(payload);
+  Object.assign(settings, normalized);
 }
 
 function collectSettings() {
-  return {
-    mineru_api_base: settings.mineru_api_base.trim(),
-    mineru_api_key: settings.mineru_api_key.trim(),
-    llm_provider: settings.llm_provider.trim(),
-    llm_model: settings.llm_model.trim(),
-    llm_base_url: settings.llm_base_url.trim(),
-    llm_api_key: settings.llm_api_key.trim(),
-    embedding_provider: settings.embedding_provider.trim(),
-    embedding_model: settings.embedding_model.trim(),
-    embedding_base_url: settings.embedding_base_url.trim(),
-    embedding_api_key: settings.embedding_api_key.trim(),
-    rerank_provider: settings.rerank_provider.trim(),
-    rerank_model: settings.rerank_model.trim(),
-    rerank_base_url: settings.rerank_base_url.trim(),
-    rerank_api_key: settings.rerank_api_key.trim(),
-    vl_provider: settings.vl_provider.trim(),
-    vl_model: settings.vl_model.trim(),
-    vl_base_url: settings.vl_base_url.trim(),
-    vl_api_key: settings.vl_api_key.trim(),
-  };
+  return toRuntimePayload(settings);
 }
 
 function saveSettings() {
@@ -479,8 +485,8 @@ function saveSettings() {
   pushAssistantMessage("运行时配置已保存。");
 }
 
-async function runConnectivityTest(target, state) {
-  const runtime = collectSettings();
+async function runConnectivityTest(target, state, draftSettings = null) {
+  const runtime = draftSettings && typeof draftSettings === "object" ? toRuntimePayload(draftSettings) : collectSettings();
   state.loading = true;
   state.ok = null;
   state.message = "测试中...";
@@ -489,31 +495,11 @@ async function runConnectivityTest(target, state) {
     const resp = await fetch(`${API_BASE}/api/admin/connectivity/test`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        target,
-        mineru_api_base: runtime.mineru_api_base,
-        mineru_api_key: runtime.mineru_api_key,
-        llm_provider: runtime.llm_provider,
-        llm_api_key: runtime.llm_api_key,
-        llm_model: runtime.llm_model,
-        llm_base_url: runtime.llm_base_url,
-        embedding_provider: runtime.embedding_provider,
-        embedding_api_key: runtime.embedding_api_key,
-        embedding_model: runtime.embedding_model,
-        embedding_base_url: runtime.embedding_base_url,
-        rerank_provider: runtime.rerank_provider,
-        rerank_api_key: runtime.rerank_api_key,
-        rerank_model: runtime.rerank_model,
-        rerank_base_url: runtime.rerank_base_url,
-        vl_provider: runtime.vl_provider,
-        vl_api_key: runtime.vl_api_key,
-        vl_model: runtime.vl_model,
-        vl_base_url: runtime.vl_base_url,
-      }),
+      body: JSON.stringify(buildConnectivityRequest({ target, draftSettings, storedSettings: runtime })),
     });
-    const payload = await resp.json();
+    const payload = await resp.json().catch(() => ({}));
     state.ok = !!payload.ok;
-    state.message = payload.message || (payload.ok ? "联通成功" : "联通失败");
+    state.message = resolveConnectivityMessage({ ok: !!payload.ok, payload, status: resp.status });
     pushAssistantMessage(`[${target.toUpperCase()}] ${state.message}`);
   } catch (error) {
     state.ok = false;
@@ -524,54 +510,54 @@ async function runConnectivityTest(target, state) {
   }
 }
 
-async function testMineruConnectivity() {
-  const runtime = collectSettings();
+async function testMineruConnectivity(draftSettings = null) {
+  const runtime = draftSettings && typeof draftSettings === "object" ? toRuntimePayload(draftSettings) : collectSettings();
   if (!runtime.mineru_api_base) {
     mineruConn.ok = false;
-    mineruConn.message = "请先填写 MinerU API Base";
+    mineruConn.message = "请先填写 OCR API Base";
     return;
   }
-  await runConnectivityTest("mineru", mineruConn);
+  await runConnectivityTest("mineru", mineruConn, draftSettings);
 }
 
-async function testLLMConnectivity() {
-  const runtime = collectSettings();
+async function testLLMConnectivity(draftSettings = null) {
+  const runtime = draftSettings && typeof draftSettings === "object" ? toRuntimePayload(draftSettings) : collectSettings();
   if (!runtime.llm_provider) {
     llmConn.ok = false;
     llmConn.message = "请先选择 LLM Provider";
     return;
   }
-  await runConnectivityTest("llm", llmConn);
+  await runConnectivityTest("llm", llmConn, draftSettings);
 }
 
-async function testEmbeddingConnectivity() {
-  const runtime = collectSettings();
+async function testEmbeddingConnectivity(draftSettings = null) {
+  const runtime = draftSettings && typeof draftSettings === "object" ? toRuntimePayload(draftSettings) : collectSettings();
   if (!runtime.embedding_provider) {
     embeddingConn.ok = false;
     embeddingConn.message = "请先选择 Embedding Provider";
     return;
   }
-  await runConnectivityTest("embedding", embeddingConn);
+  await runConnectivityTest("embedding", embeddingConn, draftSettings);
 }
 
-async function testRerankConnectivity() {
-  const runtime = collectSettings();
+async function testRerankConnectivity(draftSettings = null) {
+  const runtime = draftSettings && typeof draftSettings === "object" ? toRuntimePayload(draftSettings) : collectSettings();
   if (!runtime.rerank_provider) {
     rerankConn.ok = false;
     rerankConn.message = "请先选择 Rerank Provider";
     return;
   }
-  await runConnectivityTest("rerank", rerankConn);
+  await runConnectivityTest("rerank", rerankConn, draftSettings);
 }
 
-async function testVLConnectivity() {
-  const runtime = collectSettings();
+async function testVLConnectivity(draftSettings = null) {
+  const runtime = draftSettings && typeof draftSettings === "object" ? toRuntimePayload(draftSettings) : collectSettings();
   if (!runtime.vl_provider) {
     vlConn.ok = false;
     vlConn.message = "请先选择 VL Provider";
     return;
   }
-  await runConnectivityTest("vl", vlConn);
+  await runConnectivityTest("vl", vlConn, draftSettings);
 }
 
 const evidenceQuality = computed(() => {
@@ -601,7 +587,7 @@ const connState = computed(() => ({
   vl: vlConn,
 }));
 
-function onTestConn(target) {
+function onTestConn(target, draftSettings = null) {
   const handlers = {
     mineru: testMineruConnectivity,
     llm: testLLMConnectivity,
@@ -609,7 +595,7 @@ function onTestConn(target) {
     rerank: testRerankConnectivity,
     vl: testVLConnectivity,
   };
-  handlers[target]?.();
+  handlers[target]?.(draftSettings);
 }
 
 async function onDocTypeFilterChange(val) {
@@ -641,6 +627,29 @@ async function loadDocuments() {
   }
 }
 
+async function refreshDocumentsIfPending() {
+  if (!hasPendingWork() || docsRefreshRunning) return;
+  docsRefreshRunning = true;
+  try {
+    await loadDocuments();
+  } finally {
+    docsRefreshRunning = false;
+  }
+}
+
+function startDocsAutoRefresh() {
+  if (docsRefreshTimer !== null) return;
+  docsRefreshTimer = window.setInterval(() => {
+    refreshDocumentsIfPending();
+  }, DOCS_REFRESH_INTERVAL_MS);
+}
+
+function stopDocsAutoRefresh() {
+  if (docsRefreshTimer === null) return;
+  window.clearInterval(docsRefreshTimer);
+  docsRefreshTimer = null;
+}
+
 function selectDocRow(item) {
   selectedDocId.value = item.version_id || item.doc_id || "";
   selectedDocVersionId.value = item.version_id || "";
@@ -664,6 +673,8 @@ async function loadArtifacts(item) {
     const mergedAssets = mergeEvidenceAssets(assets).slice(0, EVIDENCE_MAX_ITEMS);
     reviewEvidence.value = mergedAssets.map((asset, idx) => ({
       ...asset,
+      version_id: item.version_id || "",
+      doc_name: item.doc_name || "",
       id: `${asset.asset_id || asset.asset_type || "asset"}-${idx}`,
     }));
     if (reviewEvidence.value.length === 0) {
@@ -673,10 +684,17 @@ async function loadArtifacts(item) {
           asset_type: "hint",
           source_excerpt: "当前证据文本可读性较低，建议切换解析模型后重试，或直接查看原文。",
           source_page: 1,
+          version_id: item.version_id || "",
+          doc_name: item.doc_name || "",
         },
       ];
     }
-    pushAssistantMessage(`已加载 ${reviewEvidence.value.length} 条证据（已自动去重与降噪）。`);
+    const indexedChunks = Number(data?.version?.notes?.chunks || 0);
+    if (indexedChunks > 0) {
+      pushAssistantMessage(`已加载 ${reviewEvidence.value.length} 条结构化证据（全文索引块 ${indexedChunks} 条，已自动去重与降噪）。`);
+    } else {
+      pushAssistantMessage(`已加载 ${reviewEvidence.value.length} 条证据（已自动去重与降噪）。`);
+    }
     if (evidenceQuality.value.level === "low") {
       pushAssistantMessage("当前证据可读性偏低。建议启用 VL 增强后对该文档重新解析，以提升检索与回答质量。");
     }
@@ -684,6 +702,36 @@ async function loadArtifacts(item) {
     reviewEvidence.value = [{ id: "error", asset_type: "error", source_excerpt: `加载失败：${error.message}`, source_page: 1 }];
     pushAssistantMessage(`证据加载失败：${error.message}`);
   }
+}
+
+async function openEvidenceViewerFromDoc(item) {
+  if (!item?.version_id) return;
+  evidenceViewerLoading.value = true;
+  try {
+    const currentVersionId = String(selectedDocVersionId.value || "");
+    const targetVersionId = String(item.version_id || "");
+    if (!reviewEvidence.value.length || currentVersionId !== targetVersionId) {
+      await loadArtifacts(item);
+    }
+    evidenceViewerTitle.value = `证据定位 - ${item.doc_name || targetVersionId}`;
+    evidenceViewerVersionId.value = targetVersionId;
+    evidenceViewerPage.value = Number(reviewEvidence.value[0]?.source_page || 1) || 1;
+    evidenceViewerOpen.value = true;
+  } finally {
+    evidenceViewerLoading.value = false;
+  }
+}
+
+function openEvidenceViewerFromAsset(asset) {
+  const versionId = String(asset?.version_id || selectedDocVersionId.value || "").trim();
+  if (!versionId) {
+    setUploadMessage("证据定位失败：未找到对应文档版本", "error");
+    return;
+  }
+  evidenceViewerTitle.value = `证据定位 - ${asset?.doc_name || versionId}`;
+  evidenceViewerVersionId.value = versionId;
+  evidenceViewerPage.value = Number(asset?.source_page || 1) || 1;
+  evidenceViewerOpen.value = true;
 }
 
 async function addToEvalDataset(item) {
@@ -772,10 +820,12 @@ async function retryFailed() {
 
 async function reprocessDoc(item) {
   if (!item?.version_id || !canReprocessItem(item)) return;
+  const confirmed = window.confirm(buildReprocessConfirmMessage(item));
+  if (!confirmed) return;
   const runtime = collectSettings();
   if (!runtime.mineru_api_base || !runtime.mineru_api_key) {
-    setUploadMessage("请先在 API 设置中填写 MinerU API Base 与 MinerU API Token", "error");
-    pushAssistantMessage("重新解析前需要先填写 MinerU API 配置。");
+    setUploadMessage("请先在 API 设置中填写 OCR API Base 与 OCR API Key", "error");
+    pushAssistantMessage("重新解析前需要先填写 OCR API 配置。");
     return;
   }
   try {
@@ -917,8 +967,10 @@ function triggerUpload() {
 }
 
 function onFileChange(event) {
-  const file = event.target?.files?.[0];
-  if (file) uploadPdf(file);
+  const files = Array.from(event.target?.files || []);
+  if (files.length > 0) {
+    uploadPdfBatch(files);
+  }
 }
 
 function sleep(ms) {
@@ -926,7 +978,14 @@ function sleep(ms) {
 }
 
 async function pollVersionStatus(versionId, token, attemptsLeft) {
-  if (token !== pollToken || attemptsLeft <= 0) return;
+  if (token !== pollToken) return;
+  if (attemptsLeft <= 0) {
+    await loadDocuments();
+    if (isPendingStatus(uploadMeta.versionStatus)) {
+      setUploadMessage("处理时间较长，已转为后台继续处理（页面会自动刷新状态）", "info");
+    }
+    return;
+  }
   try {
     const response = await fetch(`${API_BASE}/api/admin/docs/${encodeURIComponent(versionId)}/artifacts`);
     if (response.ok) {
@@ -940,7 +999,9 @@ async function pollVersionStatus(versionId, token, attemptsLeft) {
         return;
       }
       if (status === "failed" || status === "failed_archived") {
-        setUploadMessage(`处理结束：${status}`, "error");
+        const notes = payload?.intermediate?.notes && typeof payload.intermediate.notes === "object" ? payload.intermediate.notes : {};
+        const reason = extractFailureReason(notes);
+        setUploadMessage(reason ? `处理结束：${status}（${reason}）` : `处理结束：${status}`, "error");
         return;
       }
     }
@@ -951,73 +1012,136 @@ async function pollVersionStatus(versionId, token, attemptsLeft) {
   await pollVersionStatus(versionId, token, attemptsLeft - 1);
 }
 
-async function uploadPdf(file) {
-  if (!file) return;
+function buildUploadFormData(file, runtime) {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  formData.append("doc_type", selectedUploadDocType.value || "规范规程");
+  if (runtime.mineru_api_base) formData.append("mineru_api_base", runtime.mineru_api_base);
+  if (runtime.mineru_api_key) formData.append("mineru_api_key", runtime.mineru_api_key);
+  if (runtime.llm_provider) formData.append("llm_provider", runtime.llm_provider);
+  if (runtime.llm_api_key) formData.append("llm_api_key", runtime.llm_api_key);
+  if (runtime.llm_model) formData.append("llm_model", runtime.llm_model);
+  if (runtime.llm_base_url) formData.append("llm_base_url", runtime.llm_base_url);
+  if (runtime.embedding_provider) formData.append("embedding_provider", runtime.embedding_provider);
+  if (runtime.embedding_api_key) formData.append("embedding_api_key", runtime.embedding_api_key);
+  if (runtime.embedding_model) formData.append("embedding_model", runtime.embedding_model);
+  if (runtime.embedding_base_url) formData.append("embedding_base_url", runtime.embedding_base_url);
+  if (runtime.rerank_provider) formData.append("rerank_provider", runtime.rerank_provider);
+  if (runtime.rerank_api_key) formData.append("rerank_api_key", runtime.rerank_api_key);
+  if (runtime.rerank_model) formData.append("rerank_model", runtime.rerank_model);
+  if (runtime.rerank_base_url) formData.append("rerank_base_url", runtime.rerank_base_url);
+  if (runtime.vl_provider) formData.append("vl_provider", runtime.vl_provider);
+  if (runtime.vl_api_key) formData.append("vl_api_key", runtime.vl_api_key);
+  if (runtime.vl_model) formData.append("vl_model", runtime.vl_model);
+  if (runtime.vl_base_url) formData.append("vl_base_url", runtime.vl_base_url);
+  return formData;
+}
+
+async function uploadPdf(file, runtime) {
+  const formData = buildUploadFormData(file, runtime);
+  const response = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: formData });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${response.status} ${text}`);
+  }
+  return response.json();
+}
+
+function syncUploadMetaFromPayload(payload) {
+  uploadMeta.docId = payload.doc_id || "-";
+  uploadMeta.versionId = payload.version_id || "-";
+  uploadMeta.objectKey = payload.object_key || "-";
+  uploadMeta.docType = payload.doc_type || selectedUploadDocType.value || "规范规程";
+  if (payload.doc_type && !["all", payload.doc_type].includes(docTypeFilter.value)) {
+    docTypeFilter.value = payload.doc_type;
+  }
+  uploadMeta.versionStatus = payload.deduplicated ? payload.status || "processed" : "uploaded";
+}
+
+async function uploadPdfBatch(files) {
+  const pdfFiles = files.filter((file) => /\.pdf$/i.test(String(file?.name || "")));
+  if (!pdfFiles.length) {
+    setUploadMessage("未选择可上传的 PDF 文件", "error");
+    return;
+  }
   pollToken += 1;
   const token = pollToken;
   const runtime = collectSettings();
+  const total = pdfFiles.length;
+  const concurrency = Math.min(3, total);
+  const successes = [];
+  const failures = [];
+  let cursor = 0;
+  let completed = 0;
+
   isUploading.value = true;
   uploadMeta.versionStatus = "uploading";
-  setUploadMessage(`正在上传 ${file.name}...`, "info");
   expandCopilot();
+  setUploadMessage(total === 1 ? `正在上传 ${pdfFiles[0].name}...` : `批量上传中 0/${total}`, "info");
+
+  const refreshProgress = () => {
+    if (total <= 1) return;
+    setUploadMessage(`批量上传中 ${completed}/${total}（成功 ${successes.length}，失败 ${failures.length}）`, "info");
+  };
+
+  const worker = async () => {
+    while (true) {
+      const idx = cursor;
+      cursor += 1;
+      if (idx >= total) return;
+      const file = pdfFiles[idx];
+      try {
+        const payload = await uploadPdf(file, runtime);
+        successes.push({ file, payload });
+      } catch (error) {
+        failures.push({ file, error: error.message });
+      } finally {
+        completed += 1;
+        refreshProgress();
+      }
+    }
+  };
 
   try {
-    const formData = new FormData();
-    formData.append("file", file, file.name);
-    formData.append("doc_type", selectedUploadDocType.value || "规范规程");
-    if (runtime.mineru_api_base) formData.append("mineru_api_base", runtime.mineru_api_base);
-    if (runtime.mineru_api_key) formData.append("mineru_api_key", runtime.mineru_api_key);
-    if (runtime.llm_provider) formData.append("llm_provider", runtime.llm_provider);
-    if (runtime.llm_api_key) formData.append("llm_api_key", runtime.llm_api_key);
-    if (runtime.llm_model) formData.append("llm_model", runtime.llm_model);
-    if (runtime.llm_base_url) formData.append("llm_base_url", runtime.llm_base_url);
-    if (runtime.embedding_provider) formData.append("embedding_provider", runtime.embedding_provider);
-    if (runtime.embedding_api_key) formData.append("embedding_api_key", runtime.embedding_api_key);
-    if (runtime.embedding_model) formData.append("embedding_model", runtime.embedding_model);
-    if (runtime.embedding_base_url) formData.append("embedding_base_url", runtime.embedding_base_url);
-    if (runtime.rerank_provider) formData.append("rerank_provider", runtime.rerank_provider);
-    if (runtime.rerank_api_key) formData.append("rerank_api_key", runtime.rerank_api_key);
-    if (runtime.rerank_model) formData.append("rerank_model", runtime.rerank_model);
-    if (runtime.rerank_base_url) formData.append("rerank_base_url", runtime.rerank_base_url);
-    if (runtime.vl_provider) formData.append("vl_provider", runtime.vl_provider);
-    if (runtime.vl_api_key) formData.append("vl_api_key", runtime.vl_api_key);
-    if (runtime.vl_model) formData.append("vl_model", runtime.vl_model);
-    if (runtime.vl_base_url) formData.append("vl_base_url", runtime.vl_base_url);
-
-    const response = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: formData });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`${response.status} ${text}`);
-    }
-
-    const payload = await response.json();
-    uploadMeta.docId = payload.doc_id || "-";
-    uploadMeta.versionId = payload.version_id || "-";
-    uploadMeta.objectKey = payload.object_key || "-";
-    uploadMeta.docType = payload.doc_type || selectedUploadDocType.value || "规范规程";
-    if (payload.doc_type && !["all", payload.doc_type].includes(docTypeFilter.value)) {
-      docTypeFilter.value = payload.doc_type;
-    }
-    if (payload.deduplicated) {
-      uploadMeta.versionStatus = payload.status || "processed";
-      if (payload.requeued) {
-        setUploadMessage("文件已存在，已触发重新解析", "ok");
-        pushAssistantMessage(`文档 ${file.name} 已命中去重并重新入队（version=${payload.version_id || "-"}）。`);
-      } else {
-        setUploadMessage("文件已存在，已复用历史任务", "ok");
-        pushAssistantMessage(`文档 ${file.name} 已去重复用（version=${payload.version_id || "-"}）。`);
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    const lastSuccess = successes.length > 0 ? successes[successes.length - 1] : null;
+    if (lastSuccess) {
+      const { payload } = lastSuccess;
+      syncUploadMetaFromPayload(payload);
+      await loadDocuments();
+      if (payload?.version_id) {
+        await pollVersionStatus(payload.version_id, token, 90);
       }
     } else {
-      uploadMeta.versionStatus = "uploaded";
-      setUploadMessage("上传成功，已入队处理", "ok");
-      pushAssistantMessage(`文档 ${file.name} 上传成功，正在处理。`);
+      uploadMeta.versionStatus = "upload_failed";
     }
 
-    await loadDocuments();
-    await pollVersionStatus(payload.version_id, token, 90);
-  } catch (error) {
-    uploadMeta.versionStatus = "upload_failed";
-    setUploadMessage(`上传失败：${error.message}`, "error");
+    if (total === 1 && lastSuccess) {
+      const { file, payload } = lastSuccess;
+      if (payload.deduplicated) {
+        if (payload.requeued) {
+          setUploadMessage("文件已存在，已触发重新解析", "ok");
+          pushAssistantMessage(`文档 ${file.name} 已命中去重并重新入队（version=${payload.version_id || "-"}）。`);
+        } else {
+          setUploadMessage("文件已存在，已复用历史任务", "ok");
+          pushAssistantMessage(`文档 ${file.name} 已去重复用（version=${payload.version_id || "-"}）。`);
+        }
+      } else {
+        setUploadMessage("上传成功，已入队处理", "ok");
+        pushAssistantMessage(`文档 ${file.name} 上传成功，正在处理。`);
+      }
+    } else if (failures.length === 0) {
+      setUploadMessage(`批量上传完成：成功 ${successes.length}/${total}`, "ok");
+      pushAssistantMessage(`批量上传完成：成功 ${successes.length}/${total}，均已入队处理。`);
+    } else if (successes.length > 0) {
+      const failedNames = failures.slice(0, 5).map((x) => x.file?.name || "unknown").join("，");
+      setUploadMessage(`批量上传完成：成功 ${successes.length}/${total}，失败 ${failures.length}/${total}`, "error");
+      pushAssistantMessage(`批量上传部分失败。失败文件：${failedNames}${failures.length > 5 ? " 等" : ""}。`);
+    } else {
+      const firstErr = failures[0]?.error || "unknown";
+      setUploadMessage(`批量上传失败：${firstErr}`, "error");
+      pushAssistantMessage(`批量上传失败：${firstErr}`);
+    }
   } finally {
     isUploading.value = false;
     if (pdfInputRef.value) pdfInputRef.value.value = "";
@@ -1067,7 +1191,7 @@ async function sendChat(question) {
     const citations = Array.isArray(data.citations) ? data.citations : [];
     const lines = [data.answer || "（无回答）", "", `引用数: ${citations.length}`];
     if (citations.length > 0) {
-      citations.slice(0, 3).forEach((item, idx) => {
+      citations.forEach((item, idx) => {
         lines.push(`${idx + 1}. ${item.doc_name || "unknown"} p.${item.page_start || "-"}`);
       });
     }
@@ -1091,18 +1215,33 @@ function onGlobalKeydown(event) {
   }
 }
 
+const onGlobalPointerDown = createCopilotAutoCollapseHandler({
+  isCollapsed: () => copilotCollapsed.value,
+  isNarrowViewport: () => isNarrowViewport(),
+  collapse: collapseCopilot,
+  ignoreViewport: true,
+});
+
 onMounted(async () => {
   const savedSettings = readSettings();
   applySettings(savedSettings);
-  if (!hasRuntimeSettings(savedSettings)) {
+  if (!hasRuntimeSettingsValue(savedSettings)) {
     settingsDrawerOpen.value = true;
   }
   pushAssistantMessage("你好，我在右侧栏协助你完成文档调试。快捷键：⌘/Ctrl + J");
   window.addEventListener("keydown", onGlobalKeydown);
+  window.addEventListener("pointerdown", onGlobalPointerDown, true);
+  window.addEventListener("mousedown", onGlobalPointerDown, true);
+  window.addEventListener("touchstart", onGlobalPointerDown, true);
+  startDocsAutoRefresh();
   await Promise.all([loadDocuments(), loadLLMQuality()]);
 });
 
 onBeforeUnmount(() => {
+  stopDocsAutoRefresh();
   window.removeEventListener("keydown", onGlobalKeydown);
+  window.removeEventListener("pointerdown", onGlobalPointerDown, true);
+  window.removeEventListener("mousedown", onGlobalPointerDown, true);
+  window.removeEventListener("touchstart", onGlobalPointerDown, true);
 });
 </script>

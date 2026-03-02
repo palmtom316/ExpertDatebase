@@ -17,7 +17,7 @@
 
 ## 启动命令
 ```bash
-docker compose -f docker/docker-compose.yml up -d --build
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml up -d --build
 ```
 
 ## 冒烟用例
@@ -29,12 +29,12 @@ docker compose -f docker/docker-compose.yml up -d --build
 ## 回滚方案
 1. 停止当前版本：
 ```bash
-docker compose -f docker/docker-compose.yml down
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml down
 ```
 2. 回退到上一 tag/commit，重新构建并启动：
 ```bash
 git checkout <previous-tag-or-commit>
-docker compose -f docker/docker-compose.yml up -d --build
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml up -d --build
 ```
 3. 如新迁移影响业务，执行相应 `alembic downgrade` 回退。
 

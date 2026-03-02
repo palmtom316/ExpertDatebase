@@ -1,0 +1,25 @@
+services:
+  api-server:
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in production}@postgres:5432/expertkb
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required in production}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required in production}
+      - AUTH_ENABLED=true
+      - AUTH_TOKENS_JSON=${AUTH_TOKENS_JSON:?AUTH_TOKENS_JSON is required in production}
+      - APP_ENV=production
+
+  worker:
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in production}@postgres:5432/expertkb
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required in production}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required in production}
+      - APP_ENV=production
+
+  postgres:
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in production}
+
+  minio:
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required in production}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required in production}

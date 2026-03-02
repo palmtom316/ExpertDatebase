@@ -54,3 +54,26 @@ def test_worker_qdrant_upsert_recovers_from_vector_mismatch(monkeypatch: pytest.
 
     assert "http://qdrant:6333/collections/chunks_v1" in calls["delete"]
     assert calls["put"].count("http://qdrant:6333/collections/chunks_v1/points?wait=true") == 2
+
+
+def test_worker_qdrant_upsert_retries_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"put": 0}
+
+    def fake_put(url: str, json: dict, timeout: float):
+        calls["put"] += 1
+        if url.endswith("/collections/chunks_v1/points?wait=true") and calls["put"] == 2:
+            raise requests.Timeout("read timeout")
+        return _Resp(200, text='{"result":{"status":"ok"}}')
+
+    monkeypatch.setattr("worker.qdrant_repo.requests.put", fake_put)
+
+    repo = QdrantHttpRepo(endpoint="http://qdrant:6333", collection="chunks_v1", vector_name="text_embedding")
+
+    repo.upsert(
+        point_id="c2",
+        vector=[0.1] * 1024,
+        payload={"doc_name": "demo.pdf"},
+    )
+
+    # one put for ensure-collection + two puts for upsert (first timeout, second success)
+    assert calls["put"] == 3

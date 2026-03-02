@@ -213,6 +213,20 @@ def upload_pdf_bytes(
     }
 
 
+async def read_upload_bytes(file: UploadFile, max_bytes: int, chunk_size: int = 1024 * 1024) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="file too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.get("/docs")
 def list_docs(limit: int | None = None, doc_type: str | None = None) -> dict[str, Any]:
     normalized_doc_type = normalize_doc_category(doc_type) if doc_type else None
@@ -273,14 +287,7 @@ async def upload(
             pass
 
     # Stream read with size cap — avoid loading entire file into memory at once
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in file:
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(status_code=413, detail="file too large")
-        chunks.append(chunk)
-    content = b"".join(chunks)
+    content = await read_upload_bytes(file=file, max_bytes=max_bytes)
 
     validate_upload_payload(
         filename=file.filename or "",

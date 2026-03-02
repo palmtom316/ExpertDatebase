@@ -54,6 +54,7 @@
             <td>
               <div class="doc-actions">
                 <button class="btn btn-secondary btn-sm" type="button" @click.stop="$emit('loadArtifacts', item)">查看证据</button>
+                <button class="btn btn-secondary btn-sm" type="button" @click.stop="$emit('openEvidenceViewer', item)">证据定位</button>
                 <button class="btn btn-ghost btn-sm" type="button" @click.stop="$emit('addToEval', item)">试评</button>
                 <button class="btn btn-secondary btn-sm" type="button" :disabled="!canReprocess(item)" @click.stop="$emit('reprocess', item)">解析</button>
                 <button class="btn btn-danger btn-sm" type="button" :disabled="deletingVersionId === item.version_id" @click.stop="$emit('deleteDoc', item)">
@@ -81,7 +82,7 @@ const props = defineProps({
   docTypeOptions: { type: Array, required: true },
 });
 
-defineEmits(["selectDoc", "loadArtifacts", "addToEval", "reprocess", "deleteDoc", "docTypeFilterChange"]);
+const emit = defineEmits(["selectDoc", "loadArtifacts", "openEvidenceViewer", "addToEval", "reprocess", "deleteDoc", "docTypeFilterChange"]);
 
 const chips = [
   { value: "all", label: "全部" },

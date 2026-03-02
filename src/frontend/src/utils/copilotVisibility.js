@@ -46,3 +46,25 @@ export function shouldCollapseCopilotOnGlobalInteraction({ collapsed, narrowView
   if (isCopilotInteractionEvent(event)) return false;
   return true;
 }
+
+export function createCopilotAutoCollapseHandler({
+  isCollapsed,
+  isNarrowViewport,
+  collapse,
+  ignoreViewport = false,
+} = {}) {
+  const readCollapsed = typeof isCollapsed === "function" ? isCollapsed : () => true;
+  const readNarrowViewport = typeof isNarrowViewport === "function" ? isNarrowViewport : () => false;
+  const collapseCopilot = typeof collapse === "function" ? collapse : () => {};
+
+  return function onGlobalInteraction(event) {
+    const shouldCollapse = shouldCollapseCopilotOnGlobalInteraction({
+      collapsed: Boolean(readCollapsed()),
+      narrowViewport: ignoreViewport ? true : Boolean(readNarrowViewport()),
+      event,
+    });
+    if (!shouldCollapse) return false;
+    collapseCopilot();
+    return true;
+  };
+}

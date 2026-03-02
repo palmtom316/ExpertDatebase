@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shouldCollapseCopilotOnGlobalInteraction } from "./copilotVisibility.js";
+import {
+  createCopilotAutoCollapseHandler,
+  shouldCollapseCopilotOnGlobalInteraction,
+} from "./copilotVisibility.js";
 
 function mockNode(matchSelectors = []) {
   return {
@@ -100,4 +103,56 @@ test("does not collapse on desktop viewport", () => {
   });
 
   assert.equal(shouldCollapse, false);
+});
+
+test("auto-collapse handler closes copilot on narrow outside interaction", () => {
+  let collapsed = false;
+  let collapseCalls = 0;
+  const handler = createCopilotAutoCollapseHandler({
+    isCollapsed: () => collapsed,
+    isNarrowViewport: () => true,
+    collapse: () => {
+      collapseCalls += 1;
+      collapsed = true;
+    },
+  });
+
+  const consumed = handler(mockEvent({ target: mockNode([]) }));
+
+  assert.equal(consumed, true);
+  assert.equal(collapseCalls, 1);
+  assert.equal(collapsed, true);
+});
+
+test("auto-collapse handler ignores interaction inside trigger", () => {
+  let collapseCalls = 0;
+  const handler = createCopilotAutoCollapseHandler({
+    isCollapsed: () => false,
+    isNarrowViewport: () => true,
+    collapse: () => {
+      collapseCalls += 1;
+    },
+  });
+
+  const consumed = handler(mockEvent({ target: mockNode([".copilot-trigger"]) }));
+
+  assert.equal(consumed, false);
+  assert.equal(collapseCalls, 0);
+});
+
+test("auto-collapse handler can collapse even when viewport is wide", () => {
+  let collapseCalls = 0;
+  const handler = createCopilotAutoCollapseHandler({
+    isCollapsed: () => false,
+    isNarrowViewport: () => false,
+    ignoreViewport: true,
+    collapse: () => {
+      collapseCalls += 1;
+    },
+  });
+
+  const consumed = handler(mockEvent({ target: mockNode([]) }));
+
+  assert.equal(consumed, true);
+  assert.equal(collapseCalls, 1);
 });

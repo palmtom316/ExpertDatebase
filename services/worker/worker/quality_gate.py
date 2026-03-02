@@ -64,7 +64,7 @@ def _has_evidence_signal(text: str) -> bool:
         return True
     if re.search(r"\d+\s*(?:kV|KV|千伏|MVA|万元|万|亿)", s, flags=re.IGNORECASE):
         return True
-    if re.search(r"(证书|合同|项目|业主|负责人|断路器|电容器|验收|规范|标准)", s):
+    if re.search(r"(证书|合同|项目|业主|负责人|断路器|电容器|验收|规范|标准|适用范围|适用|术语|定义|总则)", s):
         return True
     return False
 

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Viewer</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: auto;
+        background: #f3f5f8;
+      }
+      .wrap {
+        min-height: 100%;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 12px;
+        box-sizing: border-box;
+      }
+      canvas {
+        background: #fff;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+      }
+      .error {
+        margin: 16px;
+        padding: 10px 12px;
+        border: 1px solid #fecaca;
+        border-radius: 8px;
+        background: #fff1f2;
+        color: #b91c1c;
+        font: 14px/1.4 sans-serif;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="wrap" class="wrap">
+      <canvas id="pdf-canvas"></canvas>
+    </div>
+    <div id="boot-error" class="error" style="display: none;"></div>
+    <script>
+      (function () {
+        var boot = document.getElementById("boot-error");
+        if (!boot) return;
+        function show(message) {
+          boot.style.display = "block";
+          boot.textContent = String(message || "PDF viewer initialization failed");
+        }
+        window.addEventListener("error", function (event) {
+          var file = String((event && event.filename) || "");
+          if (!file.includes("pdf.min") && !file.includes("simple-viewer")) return;
+          var msg = event && event.message ? event.message : "未知脚本错误";
+          show("PDF 渲染失败：" + String(msg));
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          var reason = event && event.reason ? event.reason : "unknown";
+          show("PDF 渲染失败：" + String(reason && reason.message ? reason.message : reason));
+        });
+      })();
+    </script>
+    <script type="module" src="/vendor/pdfjs/simple-viewer.js"></script>
+  </body>
+  </html>

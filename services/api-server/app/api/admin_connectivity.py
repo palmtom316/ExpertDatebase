@@ -63,6 +63,19 @@ def _normalize_token(raw: str) -> str:
     return token
 
 
+def _build_mineru_headers(api_key: str, token: str, json_mode: bool = False) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    # Backward-compatible fallback: many MinerU deployments require `token` header.
+    token_value = token or api_key
+    if token_value:
+        headers["token"] = token_value
+    if json_mode:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
 def _extract_api_error(body: Any) -> str:
     if not isinstance(body, dict):
         return ""
@@ -105,14 +118,10 @@ def _test_mineru(payload: dict[str, Any]) -> dict[str, Any]:
     if not base:
         return _fail(target="mineru", message="mineru_api_base 不能为空")
 
-    headers: dict[str, str] = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    if token:
-        headers["token"] = token
+    headers = _build_mineru_headers(api_key=api_key, token=token, json_mode=False)
 
     if "/api/v4" in base:
-        json_headers = {**headers, "Content-Type": "application/json"}
+        json_headers = _build_mineru_headers(api_key=api_key, token=token, json_mode=True)
         api_root = f"{base.split('/api/v4', 1)[0]}/api/v4"
         # Use file-urls/batch to verify auth — allocates a pre-signed URL without
         # actually parsing anything (no quota consumed). This is the same endpoint
@@ -141,7 +150,7 @@ def _test_mineru(payload: dict[str, Any]) -> dict[str, Any]:
                     "endpoint": endpoint,
                     "mode": "cloud_v4",
                     "auth_header_present": bool(api_key),
-                    "token_header_present": bool(token),
+                    "token_header_present": bool(token or api_key),
                 },
             )
         return _ok(
@@ -151,7 +160,7 @@ def _test_mineru(payload: dict[str, Any]) -> dict[str, Any]:
                 "endpoint": endpoint,
                 "mode": "cloud_v4",
                 "auth_header_present": bool(api_key),
-                "token_header_present": bool(token),
+                "token_header_present": bool(token or api_key),
                 "status_code": int(getattr(resp, "status_code", 200)),
             },
         )
@@ -172,7 +181,7 @@ def _test_mineru(payload: dict[str, Any]) -> dict[str, Any]:
                 "endpoint": base,
                 "mode": "parse_upload",
                 "auth_header_present": bool(api_key),
-                "token_header_present": bool(token),
+                "token_header_present": bool(token or api_key),
             },
         )
 
@@ -183,7 +192,7 @@ def _test_mineru(payload: dict[str, Any]) -> dict[str, Any]:
             "endpoint": base,
             "mode": "parse_upload",
             "auth_header_present": bool(api_key),
-            "token_header_present": bool(token),
+            "token_header_present": bool(token or api_key),
             "status_code": int(getattr(resp, "status_code", 200)),
         },
     )

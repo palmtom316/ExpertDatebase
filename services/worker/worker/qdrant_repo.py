@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Protocol
 from uuid import UUID, uuid5, NAMESPACE_URL
 
@@ -42,6 +43,8 @@ class QdrantHttpRepo:
         self.collection = collection
         self.vector_name = vector_name
         self.timeout_s = timeout_s
+        self.upsert_max_retries = max(0, int(os.getenv("QDRANT_UPSERT_MAX_RETRIES", "2")))
+        self.upsert_retry_delay_s = max(0.0, float(os.getenv("QDRANT_UPSERT_RETRY_DELAY_S", "0.4")))
         self._collection_ready = False
 
     def _url(self, suffix: str) -> str:
@@ -100,6 +103,21 @@ class QdrantHttpRepo:
         except ValueError:
             return str(uuid5(NAMESPACE_URL, str(point_id)))
 
+    def _put_with_retry(self, endpoint: str, body: dict[str, Any]) -> requests.Response:
+        last_exc: Exception | None = None
+        for attempt in range(self.upsert_max_retries + 1):
+            try:
+                return requests.put(endpoint, json=body, timeout=self.timeout_s)
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_exc = exc
+                if attempt >= self.upsert_max_retries:
+                    break
+                if self.upsert_retry_delay_s > 0:
+                    time.sleep(self.upsert_retry_delay_s)
+        if last_exc is not None:
+            raise RuntimeError(f"qdrant upsert timeout after retries: {last_exc}") from last_exc
+        raise RuntimeError("qdrant upsert failed without explicit exception")
+
     def upsert(self, point_id: str, vector: list[float], payload: dict[str, Any]) -> None:
         self._ensure_collection(len(vector))
         body = {
@@ -112,7 +130,7 @@ class QdrantHttpRepo:
             ]
         }
         endpoint = self._url(f"/collections/{self.collection}/points?wait=true")
-        resp = requests.put(endpoint, json=body, timeout=self.timeout_s)
+        resp = self._put_with_retry(endpoint=endpoint, body=body)
         try:
             resp.raise_for_status()
             return
@@ -121,7 +139,7 @@ class QdrantHttpRepo:
             body_text = self._error_text(resp)
             if self._is_recoverable_upsert_error(status_code=status_code, body=body_text):
                 self._recreate_collection(len(vector))
-                retry_resp = requests.put(endpoint, json=body, timeout=self.timeout_s)
+                retry_resp = self._put_with_retry(endpoint=endpoint, body=body)
                 try:
                     retry_resp.raise_for_status()
                     return
@@ -165,6 +183,7 @@ def create_qdrant_repo_from_env() -> QdrantRepo:
             endpoint=endpoint,
             collection=os.getenv("QDRANT_COLLECTION", "chunks_v1"),
             vector_name=os.getenv("QDRANT_VECTOR_NAME", "text_embedding"),
+            timeout_s=float(os.getenv("QDRANT_HTTP_TIMEOUT_S", "12")),
         )
 
     return InMemoryQdrantRepo()

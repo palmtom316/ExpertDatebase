@@ -166,6 +166,32 @@ def test_mineru_connectivity_strips_bearer_prefix(monkeypatch: pytest.MonkeyPatc
     assert called["headers"]["Authorization"] == "Bearer mineru-key"
 
 
+def test_mineru_connectivity_fallbacks_token_header_from_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict = {}
+
+    def fake_post(url: str, headers: dict, files: dict, timeout: float, **kwargs):
+        called["headers"] = headers
+        return _DummyResponse(status_code=200)
+
+    monkeypatch.setattr("app.api.admin_connectivity.requests.post", fake_post)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/admin/connectivity/test",
+        json={
+            "target": "mineru",
+            "mineru_api_base": "https://mineru.example.com",
+            "mineru_api_key": "mineru-key",
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert called["headers"]["Authorization"] == "Bearer mineru-key"
+    assert called["headers"]["token"] == "mineru-key"
+
+
 def test_embedding_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict = {}
 

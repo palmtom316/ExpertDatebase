@@ -51,6 +51,7 @@ def test_mineru_client_uses_runtime_endpoint(monkeypatch: pytest.MonkeyPatch) ->
 
     assert captured["url"] == "https://mineru.example.com/parse"
     assert captured["headers"]["Authorization"] == "Bearer mineru-key"
+    assert captured["headers"]["token"] == "mineru-key"
     assert out["pages"][0]["blocks"][0]["text"] == "runtime mineru"
 
 

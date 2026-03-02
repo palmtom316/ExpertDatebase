@@ -18,19 +18,20 @@
       <div class="settings-content">
         <!-- OCR -->
         <article v-if="activeTab === 'OCR'" class="settings-form">
-          <div class="form-header"><h3>MinerU 文档解析</h3></div>
+          <div class="form-header"><h3>OCR 文档解析</h3></div>
           <div class="form-grid">
-            <label class="form-field">
-              <span>MinerU API Base</span>
-              <input v-model.trim="local.mineru_api_base" placeholder="https://mineru.net/api/v4/extract/task" />
+            <label class="form-field"><span>Provider</span>
+              <select v-model="local.ocr_provider">
+                <option value="openai">openai-compatible</option>
+                <option value="mineru">mineru</option>
+              </select>
             </label>
-            <label class="form-field">
-              <span>MinerU API Token</span>
-              <input v-model.trim="local.mineru_api_key" type="password" placeholder="官网 token" />
-            </label>
+            <label class="form-field"><span>Model</span><input v-model.trim="local.ocr_model" placeholder="vlm / gpt-4o-mini" /></label>
+            <label class="form-field"><span>API Base</span><input v-model.trim="local.ocr_base_url" placeholder="https://your-ocr-gateway/v1 或 https://mineru.net/api/v4/extract/task" /></label>
+            <label class="form-field"><span>API Key</span><input v-model.trim="local.ocr_api_key" type="password" placeholder="ocr-key" /></label>
           </div>
           <div class="form-actions">
-            <button class="btn btn-secondary" type="button" :disabled="connState.mineru.loading" @click="$emit('testConn', 'mineru')">
+            <button class="btn btn-secondary" type="button" :disabled="connState.mineru.loading" @click="triggerTestConn('mineru')">
               {{ connState.mineru.loading ? "CHECKING..." : "API CHECK" }}
             </button>
             <span class="conn-badge" :class="connClass(connState.mineru.ok)">{{ connState.mineru.message }}</span>
@@ -51,7 +52,7 @@
             <label class="form-field"><span>QA API Key</span><input v-model.trim="local.llm_api_key" type="password" placeholder="llm-key" /></label>
           </div>
           <div class="form-actions">
-            <button class="btn btn-secondary" type="button" :disabled="connState.llm.loading" @click="$emit('testConn', 'llm')">{{ connState.llm.loading ? "CHECKING..." : "API CHECK" }}</button>
+            <button class="btn btn-secondary" type="button" :disabled="connState.llm.loading" @click="triggerTestConn('llm')">{{ connState.llm.loading ? "CHECKING..." : "API CHECK" }}</button>
             <span class="conn-badge" :class="connClass(connState.llm.ok)">{{ connState.llm.message }}</span>
             <div class="spacer"></div>
             <button class="btn btn-primary" type="button" @click="save">保存应用</button>
@@ -70,7 +71,7 @@
             <label class="form-field"><span>API Key</span><input v-model.trim="local.embedding_api_key" type="password" placeholder="embedding-key" /></label>
           </div>
           <div class="form-actions">
-            <button class="btn btn-secondary" type="button" :disabled="connState.embedding.loading" @click="$emit('testConn', 'embedding')">{{ connState.embedding.loading ? "CHECKING..." : "API CHECK" }}</button>
+            <button class="btn btn-secondary" type="button" :disabled="connState.embedding.loading" @click="triggerTestConn('embedding')">{{ connState.embedding.loading ? "CHECKING..." : "API CHECK" }}</button>
             <span class="conn-badge" :class="connClass(connState.embedding.ok)">{{ connState.embedding.message }}</span>
             <div class="spacer"></div>
             <button class="btn btn-primary" type="button" @click="save">保存应用</button>
@@ -89,7 +90,7 @@
             <label class="form-field"><span>API Key</span><input v-model.trim="local.rerank_api_key" type="password" placeholder="rerank-key" /></label>
           </div>
           <div class="form-actions">
-            <button class="btn btn-secondary" type="button" :disabled="connState.rerank.loading" @click="$emit('testConn', 'rerank')">{{ connState.rerank.loading ? "CHECKING..." : "API CHECK" }}</button>
+            <button class="btn btn-secondary" type="button" :disabled="connState.rerank.loading" @click="triggerTestConn('rerank')">{{ connState.rerank.loading ? "CHECKING..." : "API CHECK" }}</button>
             <span class="conn-badge" :class="connClass(connState.rerank.ok)">{{ connState.rerank.message }}</span>
             <div class="spacer"></div>
             <button class="btn btn-primary" type="button" @click="save">保存应用</button>
@@ -108,7 +109,7 @@
             <label class="form-field"><span>API Key</span><input v-model.trim="local.vl_api_key" type="password" placeholder="vl-key" /></label>
           </div>
           <div class="form-actions">
-            <button class="btn btn-secondary" type="button" :disabled="connState.vl.loading" @click="$emit('testConn', 'vl')">{{ connState.vl.loading ? "CHECKING..." : "API CHECK" }}</button>
+            <button class="btn btn-secondary" type="button" :disabled="connState.vl.loading" @click="triggerTestConn('vl')">{{ connState.vl.loading ? "CHECKING..." : "API CHECK" }}</button>
             <span class="conn-badge" :class="connClass(connState.vl.ok)">{{ connState.vl.message }}</span>
             <div class="spacer"></div>
             <button class="btn btn-primary" type="button" @click="save">保存应用</button>
@@ -146,5 +147,9 @@ function connClass(ok) {
 function save() {
   emit("update:modelValue", { ...local });
   emit("save");
+}
+
+function triggerTestConn(target) {
+  emit("testConn", target, { ...local });
 }
 </script>

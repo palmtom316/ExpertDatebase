@@ -22,7 +22,8 @@ def _table_row_chunks(
         if not isinstance(table, dict):
             continue
         table_id = str(table.get("table_id") or "").strip()
-        page_no = int(table.get("page_no") or 0)
+        page_no = int(table.get("page_start") or table.get("page_no") or 0)
+        page_end = int(table.get("page_end") or page_no)
         raw_text = str(table.get("raw_text") or "").strip()
         if not raw_text or page_no <= 0:
             continue
@@ -30,6 +31,7 @@ def _table_row_chunks(
         if len(lines) < 2:
             continue
         header = lines[0]
+        source_type = "cross_page_table_row" if page_end > page_no else "table_row"
         for idx, row in enumerate(lines[1:], start=1):
             text = f"{header} | {row}".strip()
             chunks.append(
@@ -39,10 +41,12 @@ def _table_row_chunks(
                     "version_id": version_id,
                     "chapter_id": f"table_p{page_no}",
                     "page_start": page_no,
-                    "page_end": page_no,
+                    "page_end": page_end,
                     "text": text,
                     "block_ids": [],
-                    "source_type": "table_row",
+                    "source_type": source_type,
+                    "table_id": table_id or f"t_{page_no}_1",
+                    "row_index": idx,
                 }
             )
     return chunks

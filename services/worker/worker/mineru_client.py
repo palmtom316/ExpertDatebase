@@ -346,8 +346,11 @@ class MinerUClient:
         headers: dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        if token:
-            headers["token"] = token
+        # Some MinerU gateways accept only `token` header while others accept Bearer.
+        # Send both when token is not explicitly provided to maximize compatibility.
+        token_value = token or api_key
+        if token_value:
+            headers["token"] = token_value
         if json_mode:
             headers["Content-Type"] = "application/json"
         return headers

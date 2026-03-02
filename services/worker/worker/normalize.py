@@ -41,6 +41,25 @@ def _clean_table_text(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _strip_continuation_marker(line: str) -> str:
+    s = str(line or "").strip()
+    return re.sub(r"^(续表(?:\s*\d+)?|continued(?:\s*table)?|cont\.)\s*[:：\-]?\s*", "", s, flags=re.IGNORECASE).strip()
+
+
+def _looks_cross_page_table(text: str) -> bool:
+    s = str(text or "").strip().lower()
+    if not s:
+        return False
+    return any(mark in s for mark in ["续表", "continued", "cont."])
+
+
+def _table_header(raw_text: str) -> str:
+    lines = [line.strip() for line in str(raw_text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return _strip_continuation_marker(lines[0]).lower()
+
+
 def _signature_for_repeat(text: str) -> str:
     s = _clean_block_text(text).lower()
     s = re.sub(r"\d+", "", s)
@@ -101,6 +120,64 @@ def _drop_repeated_headers_footers(blocks: list[dict[str, Any]]) -> list[dict[st
     return out
 
 
+def _merge_cross_page_tables(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not tables:
+        return []
+
+    ordered = sorted(
+        [t for t in tables if isinstance(t, dict)],
+        key=lambda x: (int(x.get("page_no") or 0), int(x.get("order_in_page") or 0)),
+    )
+    merged: list[dict[str, Any]] = []
+
+    for raw in ordered:
+        page_no = int(raw.get("page_no") or 0)
+        text = str(raw.get("raw_text") or "").strip()
+        if page_no <= 0 or not text:
+            continue
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            continue
+
+        current = {
+            "table_id": str(raw.get("table_id") or f"t_{page_no}_1"),
+            "page_no": page_no,
+            "page_start": page_no,
+            "page_end": page_no,
+            "order_in_page": int(raw.get("order_in_page") or 0),
+            "raw_text": "\n".join(lines),
+        }
+
+        if not merged:
+            merged.append(current)
+            continue
+
+        prev = merged[-1]
+        prev_end = int(prev.get("page_end") or prev.get("page_no") or 0)
+        if page_no != prev_end + 1:
+            merged.append(current)
+            continue
+
+        prev_header = _table_header(prev.get("raw_text") or "")
+        curr_header = _table_header(current.get("raw_text") or "")
+        is_cont = _looks_cross_page_table(text)
+        same_header = bool(prev_header and curr_header and prev_header == curr_header)
+        if not (is_cont or same_header):
+            merged.append(current)
+            continue
+
+        prev_lines = [line.strip() for line in str(prev.get("raw_text") or "").splitlines() if line.strip()]
+        curr_lines = [line.strip() for line in text.splitlines() if line.strip()]
+        curr_lines[0] = _strip_continuation_marker(curr_lines[0])
+        append_lines = curr_lines[1:] if same_header and len(curr_lines) >= 2 else curr_lines
+        if append_lines and prev_lines and append_lines[0] == prev_lines[-1]:
+            append_lines = append_lines[1:]
+        prev["raw_text"] = "\n".join([*prev_lines, *append_lines]).strip()
+        prev["page_end"] = page_no
+
+    return merged
+
+
 def normalize_result(mineru_result: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     blocks: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
@@ -138,4 +215,5 @@ def normalize_result(mineru_result: dict[str, Any]) -> tuple[list[dict[str, Any]
             )
 
     blocks = _drop_repeated_headers_footers(blocks)
+    tables = _merge_cross_page_tables(tables)
     return blocks, tables

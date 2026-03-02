@@ -16,6 +16,15 @@ class ObjectStorage(Protocol):
     def put_bytes(self, object_key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
         raise NotImplementedError
 
+    def get_bytes(self, object_key: str) -> bytes:
+        raise NotImplementedError
+
+    def get_size(self, object_key: str) -> int:
+        raise NotImplementedError
+
+    def get_range(self, object_key: str, start: int, end: int) -> bytes:
+        raise NotImplementedError
+
     def exists(self, object_key: str) -> bool:
         raise NotImplementedError
 
@@ -32,6 +41,21 @@ class LocalObjectStorage:
         target = self.root / object_key
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
+
+    def get_bytes(self, object_key: str) -> bytes:
+        return (self.root / object_key).read_bytes()
+
+    def get_size(self, object_key: str) -> int:
+        return (self.root / object_key).stat().st_size
+
+    def get_range(self, object_key: str, start: int, end: int) -> bytes:
+        if start < 0 or end < start:
+            raise ValueError("invalid byte range")
+        size = end - start + 1
+        target = self.root / object_key
+        with target.open("rb") as handle:
+            handle.seek(start)
+            return handle.read(size)
 
     def exists(self, object_key: str) -> bool:
         return (self.root / object_key).exists()
@@ -70,6 +94,32 @@ class MinioObjectStorage:
         self._ensure_bucket()
         body = io.BytesIO(data)
         self.client.put_object(self.bucket, object_key, body, len(data), content_type=content_type)
+
+    def get_bytes(self, object_key: str) -> bytes:
+        self._ensure_bucket()
+        response = self.client.get_object(self.bucket, object_key)
+        try:
+            return response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
+    def get_size(self, object_key: str) -> int:
+        self._ensure_bucket()
+        stat = self.client.stat_object(self.bucket, object_key)
+        return int(stat.size)
+
+    def get_range(self, object_key: str, start: int, end: int) -> bytes:
+        if start < 0 or end < start:
+            raise ValueError("invalid byte range")
+        self._ensure_bucket()
+        length = end - start + 1
+        response = self.client.get_object(self.bucket, object_key, offset=start, length=length)
+        try:
+            return response.read()
+        finally:
+            response.close()
+            response.release_conn()
 
     def exists(self, object_key: str) -> bool:
         self._ensure_bucket()
