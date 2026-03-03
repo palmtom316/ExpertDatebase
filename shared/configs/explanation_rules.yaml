@@ -1,0 +1,4 @@
+explanation_start_regexes:
+  - "^\\s*条\\s*文\\s*说\\s*明\\s*$"
+  - "^\\s*条文说明\\s*$"
+clause_id_regex: "^\\s*(?P<id>\\d+(?:\\.\\d+)+)(?:\\((?P<sub>[0-9A-Za-z]+)\\))?\\s*(?P<rest>.*)$"

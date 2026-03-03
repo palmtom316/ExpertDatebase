@@ -1,0 +1,6 @@
+title_regex: "^\\s*(表|TABLE)\\s*(?P<no>\\d+(?:\\.\\d+)*)\\s*(?P<title>.+)$"
+header_similarity_min: 0.7
+max_pages_gap: 1
+vl_fallback:
+  enabled: true
+  max_image_px: 1600
