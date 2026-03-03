@@ -124,3 +124,40 @@ def test_chunking_keeps_sub_clause_identifier() -> None:
     )
     assert len(chunks) == 1
     assert chunks[0]["clause_id"] == "4.12.1(3)"
+
+
+def test_chunking_builds_hierarchical_clause_nodes() -> None:
+    chapters = [
+        {
+            "chapter_id": "ch_3",
+            "start_page": 30,
+            "end_page": 30,
+            "blocks": [
+                {
+                    "block_id": "b_30_1",
+                    "page_no": 30,
+                    "text": "3.0.6 主条款。\n(3) 子条款。\n1) 第一项。\n2) 第二项。",
+                }
+            ],
+            "text": "unused",
+        }
+    ]
+    chunks = chunk_chapters(
+        doc_id="doc_1",
+        version_id="ver_1",
+        chapters=chapters,
+        min_chars=1,
+        max_chars=300,
+        overlap_chars=0,
+    )
+
+    node_ids = {str(c.get("clause_node_id") or "") for c in chunks}
+    assert "3.0.6" in node_ids
+    assert "3.0.6(3)" in node_ids
+    assert "3.0.6(3).1" in node_ids
+    assert "3.0.6(3).2" in node_ids
+
+    item_chunk = next(c for c in chunks if str(c.get("clause_node_id") or "") == "3.0.6(3).1")
+    assert str(item_chunk.get("clause_id") or "") == "3.0.6(3)"
+    assert str(item_chunk.get("clause_parent_id") or "") == "3.0.6(3)"
+    assert int(item_chunk.get("clause_level") or 0) >= 5

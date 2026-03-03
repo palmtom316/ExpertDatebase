@@ -13,10 +13,10 @@
 
       <div class="evidence-viewer-body">
         <aside class="evidence-nav">
-          <div class="evidence-nav-title">证据片段</div>
+          <div class="evidence-nav-title">证据片段（证据页，非全文页）</div>
           <div class="evidence-nav-list">
             <button
-              v-for="asset in evidence"
+              v-for="asset in sortedEvidence"
               :key="asset.id"
               class="evidence-nav-item"
               :class="{ 'is-active': Number(asset.source_page || 1) === currentPage }"
@@ -37,6 +37,8 @@
           <div class="evidence-pdf-toolbar">
             <span>当前页：{{ currentPage }}<template v-if="totalPages > 0"> / {{ totalPages }}</template></span>
             <div class="evidence-pdf-toolbar-actions">
+              <button class="btn btn-ghost btn-sm" type="button" :disabled="currentPage <= 1" @click="jumpToPage(currentPage - 1)">上一页</button>
+              <button class="btn btn-ghost btn-sm" type="button" :disabled="totalPages > 0 && currentPage >= totalPages" @click="jumpToPage(currentPage + 1)">下一页</button>
               <small class="hint">状态: 内置viewer</small>
               <small class="hint">渲染: PDF.js</small>
               <a v-if="pdfUrl" class="btn btn-secondary btn-sm" :href="newWindowHref" target="_blank" rel="noopener noreferrer">新窗口打开</a>
@@ -60,7 +62,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -74,12 +76,26 @@ const props = defineProps({
 defineEmits(["close"]);
 
 const currentPage = ref(1);
+const viewerTotalPages = ref(0);
 const viewerNonce = ref(0);
 const viewerFrameRef = ref(null);
 const effectiveLoading = computed(() => Boolean(props.loading));
-const totalPages = computed(() => {
+const evidenceMaxPage = computed(() => {
   const pages = props.evidence.map((item) => Number(item?.source_page || 0)).filter((x) => Number.isFinite(x) && x > 0);
   return pages.length ? Math.max(...pages) : 0;
+});
+const totalPages = computed(() => {
+  const fromViewer = Number(viewerTotalPages.value || 0);
+  if (Number.isFinite(fromViewer) && fromViewer > 0) return fromViewer;
+  return evidenceMaxPage.value;
+});
+const sortedEvidence = computed(() => {
+  return [...(props.evidence || [])].sort((a, b) => {
+    const aPage = Number(a?.source_page || 0);
+    const bPage = Number(b?.source_page || 0);
+    if (aPage !== bPage) return aPage - bPage;
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+  });
 });
 
 const viewerSrc = computed(() => {
@@ -99,8 +115,8 @@ const newWindowHref = computed(() => {
 
 function jumpToPage(pageNo) {
   const next = Math.max(1, Number(pageNo || 1));
-  const upper = totalPages.value > 0 ? totalPages.value : next;
-  currentPage.value = Math.min(next, upper);
+  const knownUpper = totalPages.value > 0 ? totalPages.value : 0;
+  currentPage.value = knownUpper > 0 ? Math.min(next, knownUpper) : next;
 }
 
 function postViewerState() {
@@ -120,11 +136,34 @@ function onViewerLoad() {
   postViewerState();
 }
 
+function onViewerMessage(event) {
+  if (event.origin !== window.location.origin) return;
+  const data = event.data || {};
+  if (data.type !== "expert-pdf-viewer-report") return;
+  const nextTotal = Number(data.totalPages || 0);
+  const nextPage = Number(data.page || 0);
+  if (Number.isFinite(nextTotal) && nextTotal > 0) {
+    viewerTotalPages.value = Math.floor(nextTotal);
+  }
+  if (Number.isFinite(nextPage) && nextPage > 0) {
+    currentPage.value = Math.floor(nextPage);
+  }
+}
+
+onMounted(() => {
+  window.addEventListener("message", onViewerMessage);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("message", onViewerMessage);
+});
+
 watch(
   () => [props.open, props.initialPage, props.pdfUrl],
   ([open]) => {
     if (!open) return;
     currentPage.value = Math.max(1, Number(props.initialPage || 1));
+    viewerTotalPages.value = 0;
     viewerNonce.value += 1;
   },
   { immediate: true }

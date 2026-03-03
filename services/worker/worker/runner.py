@@ -216,6 +216,27 @@ def _build_table_repair_context(
     return repairs, {"attempted": len(selected), "applied": len(repairs)}
 
 
+def _extract_assets_from_normalized_pages(
+    normalized_blocks: list[dict[str, Any]],
+    ie_engine: str,
+) -> list[dict[str, Any]]:
+    by_page: dict[int, list[str]] = {}
+    for block in normalized_blocks:
+        page_no = int(block.get("page_no") or 0)
+        text = str(block.get("text") or "").strip()
+        if page_no <= 0 or not text:
+            continue
+        by_page.setdefault(page_no, []).append(text)
+
+    out: list[dict[str, Any]] = []
+    for page_no in sorted(by_page.keys()):
+        page_text = "\n".join(by_page[page_no]).strip()
+        if not page_text:
+            continue
+        out.extend(extract_assets_from_chapter(text=page_text, page_no=page_no, engine=ie_engine))
+    return out
+
+
 def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, Any]:
     doc_id = str(job["doc_id"])
     version_id = str(job["version_id"])
@@ -267,15 +288,7 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     ie_engine = str(runtime_config.get("ie_engine") or "").strip().lower()
     if not ie_engine:
         ie_engine = "langextract" if str(os.getenv("ENABLE_LANGEXTRACT", "0")).strip() in {"1", "true", "True"} else "custom"
-    ie_assets: list[dict[str, Any]] = []
-    for chapter in result["chapters"]:
-        ie_assets.extend(
-            extract_assets_from_chapter(
-                text=str(chapter.get("text", "")),
-                page_no=int(chapter.get("start_page", 0) or 0),
-                engine=ie_engine,
-            )
-        )
+    ie_assets = _extract_assets_from_normalized_pages(result.get("normalized_blocks") or [], ie_engine=ie_engine)
 
     assets_written = 0
     if rt.asset_repo is not None and ie_assets:

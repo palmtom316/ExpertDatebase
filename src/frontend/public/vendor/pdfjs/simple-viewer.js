@@ -15,6 +15,19 @@ let currentDoc = null;
 let currentDocUrl = "";
 let renderVersion = 0;
 
+function reportState(pageNo, totalPages) {
+  if (window.parent === window) return;
+  window.parent.postMessage(
+    {
+      type: "expert-pdf-viewer-report",
+      fileUrl,
+      page: Number(pageNo || targetPage || 1),
+      totalPages: Number(totalPages || currentDoc?.numPages || 0),
+    },
+    window.location.origin
+  );
+}
+
 function showError(message) {
   const text = String(message || "PDF render failed");
   if (wrap) {
@@ -39,6 +52,7 @@ async function renderPage(doc, version) {
   const pageNo = Math.min(Math.max(1, targetPage), Number(doc.numPages || 1));
   const page = await doc.getPage(pageNo);
   if (version !== renderVersion) return;
+  targetPage = pageNo;
 
   const baseViewport = page.getViewport({ scale: 1 });
   const maxWidth = Math.max(240, Math.floor((wrap?.clientWidth || 0) - 24));
@@ -59,6 +73,7 @@ async function renderPage(doc, version) {
   ctx.clearRect(0, 0, Math.floor(viewport.width), Math.floor(viewport.height));
   await page.render({ canvasContext: ctx, viewport }).promise;
   clearBootError();
+  reportState(pageNo, Number(doc.numPages || 0));
 }
 
 async function applyState(nextFileUrl, nextPage) {

@@ -683,9 +683,29 @@ def _remove_clause_constraints(filter_json: dict[str, Any] | None) -> dict[str, 
     return {"must": kept} if kept else None
 
 
+def _is_listing_query(question: str) -> bool:
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+    hints = [
+        "有哪些",
+        "包括哪些",
+        "包含哪些",
+        "列出",
+        "清单",
+        "哪些要求",
+        "what are",
+        "which are",
+        "list",
+        "include",
+    ]
+    return any(token in q for token in hints)
+
+
 def _chapter_prefixes_from_question(question: str, clause_hits: list[str]) -> list[str]:
     q = str(question or "").lower()
-    if not clause_hits or not any(token in q for token in ["章", "章节", "chapter"]):
+    chapter_hint = any(token in q for token in ["章", "章节", "chapter"])
+    if not clause_hits or (not chapter_hint and not _is_listing_query(question)):
         return []
     out: list[str] = []
     seen: set[str] = set()

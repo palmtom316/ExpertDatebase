@@ -132,6 +132,36 @@ def infer_article_path(clause_id: str) -> list[str]:
     return out
 
 
+def infer_clause_parent_id(clause_node_id: str) -> str:
+    value = str(clause_node_id or "").strip()
+    if not value:
+        return ""
+    m_item = re.match(r"^(.+\([0-9A-Za-z]+\))\.\d+$", value)
+    if m_item:
+        return m_item.group(1)
+    m_sub = re.match(r"^(.+)\([0-9A-Za-z]+\)$", value)
+    if m_sub:
+        return m_sub.group(1)
+    parts = [p for p in value.split(".") if p]
+    if len(parts) >= 2:
+        return ".".join(parts[:-1])
+    return ""
+
+
+def infer_clause_level(clause_node_id: str) -> int:
+    value = str(clause_node_id or "").strip()
+    if not value:
+        return 0
+    m_item = re.match(r"^(.+\([0-9A-Za-z]+\))\.\d+$", value)
+    if m_item:
+        return infer_clause_level(m_item.group(1)) + 1
+    base = re.sub(r"\([0-9A-Za-z]+\)$", "", value)
+    level = len([p for p in base.split(".") if p])
+    if re.search(r"\([0-9A-Za-z]+\)$", value):
+        level += 1
+    return level
+
+
 def infer_constraint_type(text: str, is_mandatory: bool) -> str:
     raw = str(text or "")
     if is_mandatory or re.search(r"(强制性条文|不得|严禁|禁止)", raw):
@@ -205,8 +235,18 @@ def build_payload(
     payload["val_line_length_km"] = infer_line_km(ie_assets, chunk.get("text", ""))
     payload["val_capacity_mva"] = infer_capacity_mva(ie_assets, chunk.get("text", ""))
     clause_id = str(chunk.get("clause_id") or "").strip() or infer_clause_no(chunk.get("text", ""))
+    clause_node_id = str(chunk.get("clause_node_id") or clause_id).strip()
+    clause_parent_id = str(chunk.get("clause_parent_id") or "").strip() or infer_clause_parent_id(clause_node_id)
+    clause_level_raw = chunk.get("clause_level")
+    try:
+        clause_level = int(clause_level_raw) if clause_level_raw is not None else infer_clause_level(clause_node_id)
+    except Exception:  # noqa: BLE001
+        clause_level = infer_clause_level(clause_node_id)
     payload["clause_id"] = clause_id
     payload["clause_no"] = clause_id
+    payload["clause_node_id"] = clause_node_id
+    payload["clause_parent_id"] = clause_parent_id
+    payload["clause_level"] = clause_level
     payload["is_mandatory"] = infer_is_mandatory(ie_assets, chunk.get("text", ""))
     payload["standard_no"] = infer_standard_no(ie_assets, chunk.get("text", ""))
     payload["certificate_no"] = infer_certificate_no(ie_assets, chunk.get("text", ""))

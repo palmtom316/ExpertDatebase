@@ -116,6 +116,29 @@ class TestPayloadBuilder(unittest.TestCase):
         self.assertEqual(payload["article_path"], ["4", "4.12", "4.12.1"])
         self.assertEqual(payload["constraint_type"], "mandatory")
 
+    def test_build_payload_keeps_clause_hierarchy_fields(self) -> None:
+        chunk = {
+            "doc_id": "doc1",
+            "version_id": "ver1",
+            "doc_name": "demo.pdf",
+            "chunk_id": "ck5",
+            "chapter_id": "ch1",
+            "page_start": 31,
+            "page_end": 31,
+            "doc_type": "规范规程",
+            "text": "1) 第一项内容。",
+            "clause_id": "3.0.6(3)",
+            "clause_node_id": "3.0.6(3).1",
+            "clause_parent_id": "3.0.6(3)",
+            "clause_level": 5,
+            "block_ids": ["b_31_1"],
+        }
+        payload = build_payload(chunk, [], [], DummyEntityIndex(), "other")
+        self.assertEqual(payload["clause_id"], "3.0.6(3)")
+        self.assertEqual(payload["clause_node_id"], "3.0.6(3).1")
+        self.assertEqual(payload["clause_parent_id"], "3.0.6(3)")
+        self.assertEqual(payload["clause_level"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

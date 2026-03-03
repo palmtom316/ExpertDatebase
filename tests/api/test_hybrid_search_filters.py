@@ -367,6 +367,75 @@ class TestHybridSearchFilters(unittest.TestCase):
             os.environ.clear()
             os.environ.update(old)
 
+    def test_hybrid_search_listing_query_expands_children_without_chapter_keyword(self) -> None:
+        class _RepoParentChildren:
+            def __init__(self) -> None:
+                self.vector_called = False
+
+            def search(self, query_vector, filter_json=None, limit=5):
+                self.vector_called = True
+                return []
+
+            def keyword_search(self, query_text, filter_json=None, limit=20):
+                must = (filter_json or {}).get("must") or []
+                has_clause_constraint = any(item.get("key") in {"clause_id", "clause_no"} for item in must)
+                if has_clause_constraint:
+                    return []
+                return [
+                    {
+                        "id": "pc_431",
+                        "score": 9.0,
+                        "payload": {
+                            "doc_id": "doc_spec",
+                            "version_id": "ver_spec",
+                            "doc_name": "spec.pdf",
+                            "page_start": 19,
+                            "page_end": 19,
+                            "excerpt": "4.3.1 绝缘油的验收与保管",
+                            "chunk_text": "4.3.1 绝缘油的验收与保管",
+                            "clause_id": "4.3.1",
+                        },
+                    },
+                    {
+                        "id": "pc_432",
+                        "score": 8.8,
+                        "payload": {
+                            "doc_id": "doc_spec",
+                            "version_id": "ver_spec",
+                            "doc_name": "spec.pdf",
+                            "page_start": 20,
+                            "page_end": 20,
+                            "excerpt": "4.3.2 绝缘油处理应符合相关规定",
+                            "chunk_text": "4.3.2 绝缘油处理应符合相关规定",
+                            "clause_id": "4.3.2",
+                        },
+                    },
+                ]
+
+            def delete_by_version(self, version_id: str):
+                return None
+
+        repo = _RepoParentChildren()
+        old = dict(os.environ)
+        os.environ["ENABLE_RERANK"] = "0"
+        os.environ["HYBRID_POST_KEYWORD_BOOST"] = "0"
+        try:
+            result = hybrid_search(
+                question="请列出 4.3 包括哪些要求",
+                repo=repo,
+                entity_index=DummyEntityIndex(),
+                top_k=5,
+            )
+            self.assertFalse(repo.vector_called)
+            self.assertEqual(result["debug"]["route_counts"]["chapter_prefix"], 2)
+            clause_ids = [str(c.get("clause_id") or "") for c in result["citations"]]
+            self.assertIn("4.3.1", clause_ids)
+            self.assertIn("4.3.2", clause_ids)
+            self.assertTrue(all(str(c.get("route") or "") == "chapter_prefix" for c in result["citations"]))
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
     def test_hybrid_search_chapter_prefix_ignores_standard_number_suffix_false_positive(self) -> None:
         class _RepoFalsePositive:
             def search(self, query_vector, filter_json=None, limit=5):

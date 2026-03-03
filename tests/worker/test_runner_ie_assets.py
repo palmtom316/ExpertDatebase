@@ -31,6 +31,28 @@ class FakeMinerU:
         }
 
 
+class FakeMinerUMultiPage:
+    def parse_pdf(self, pdf_bytes: bytes):  # noqa: ARG002
+        return {
+            "pages": [
+                {
+                    "page_no": 1,
+                    "blocks": [
+                        {"type": "paragraph", "text": "项目名称：城南变电站"},
+                    ],
+                    "tables": [],
+                },
+                {
+                    "page_no": 2,
+                    "blocks": [
+                        {"type": "paragraph", "text": "标准：GB 50148-2010"},
+                    ],
+                    "tables": [],
+                },
+            ]
+        }
+
+
 class FakeRegistry:
     def mark_version_status(self, version_id: str, status: str, notes=None):
         pass
@@ -64,3 +86,22 @@ def test_runner_extracts_and_persists_assets() -> None:
 
     assert summary['assets_written'] >= 1
     assert len(asset_repo.assets) >= 1
+
+
+def test_runner_ie_assets_follow_real_page_numbers() -> None:
+    asset_repo = FakeAssetRepo()
+    rt = WorkerRuntime(
+        storage=FakeStorage(),
+        qdrant_repo=FakeQdrant(),
+        doc_registry=FakeRegistry(),
+        mineru_client=FakeMinerUMultiPage(),
+        embedding_client=EmbeddingClient(),
+        asset_repo=asset_repo,
+    )
+
+    summary = process_document_job({"doc_id": "doc2", "version_id": "ver2", "object_key": "pdf/doc2/ver2/a.pdf"}, rt)
+
+    assert summary["assets_written"] >= 2
+    pages = {int(item.get("source_page") or 0) for item in asset_repo.assets}
+    assert 1 in pages
+    assert 2 in pages

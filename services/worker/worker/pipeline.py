@@ -214,6 +214,61 @@ def _table_three_pack_from_module(
     return chunks
 
 
+def _section_summary_text(chapter: dict[str, Any], max_chars: int = 420) -> str:
+    title = str(chapter.get("title") or "").strip()
+    raw = str(chapter.get("text") or "").strip()
+    if not raw and not title:
+        return ""
+
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        lines = [raw] if raw else []
+
+    # Keep a concise chapter-level abstraction chunk for semantic recall.
+    body = "；".join(lines[:4]).strip()
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip("；。")
+
+    parts: list[str] = []
+    if title:
+        parts.append(f"章节：{title}")
+    if body:
+        parts.append(f"摘要：{body}")
+    return "\n".join(parts).strip()
+
+
+def _section_summary_chunks(
+    doc_id: str,
+    version_id: str,
+    chapters: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for chapter in chapters:
+        chapter_id = str(chapter.get("chapter_id") or "").strip()
+        if not chapter_id:
+            continue
+        text = _section_summary_text(chapter)
+        if not text:
+            continue
+        page_start = int(chapter.get("start_page") or 0)
+        page_end = int(chapter.get("end_page") or page_start)
+        out.append(
+            {
+                "chunk_id": f"{chapter_id}_summary",
+                "doc_id": doc_id,
+                "version_id": version_id,
+                "chapter_id": chapter_id,
+                "page_start": page_start,
+                "page_end": page_end,
+                "text": text,
+                "block_ids": list(chapter.get("block_ids") or []),
+                "source_type": "section_summary",
+                "page_type": "section_summary",
+            }
+        )
+    return out
+
+
 def _explanation_chunks(
     doc_id: str,
     version_id: str,
@@ -369,6 +424,8 @@ def process_mineru_result(
         overlap_chars=overlap_chars,
     )
     text_chunks = list(chunks_raw)
+    if _env_enabled("WORKER_ENABLE_SECTION_SUMMARY_INDEX", default=True):
+        chunks_raw.extend(_section_summary_chunks(doc_id=doc_id, version_id=version_id, chapters=chapters))
     chunks_raw.extend(_table_row_chunks(doc_id=doc_id, version_id=version_id, tables=normalized_tables))
 
     if _env_enabled("WORKER_ENABLE_TABLE_THREE_PACK", default=False):
