@@ -9,7 +9,7 @@ import re
 from typing import Any
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -249,11 +249,11 @@ def list_docs(limit: int | None = None, doc_type: str | None = None) -> dict[str
     return {"items": normalized, "count": len(normalized)}
 
 
-@router.post("/upload", status_code=202)
 @limiter.limit(os.getenv("RATE_LIMIT_UPLOAD", "5/minute"))
+@router.post("/upload", status_code=202)
 async def upload(
     request: Request,
-    file: UploadFile,
+    file: UploadFile = File(...),
     doc_type: str | None = Form(default=None),
     mineru_api_base: str | None = Form(default=None),
     mineru_api_key: str | None = Form(default=None),
