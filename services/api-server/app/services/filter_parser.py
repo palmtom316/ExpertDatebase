@@ -16,6 +16,13 @@ _CERT_PAT = re.compile(r"(?<![A-Z0-9])([A-Z]{1,6}(?:-[A-Z0-9]{1,10}){2,})(?![A-Z
 _MANDATORY_HINT = re.compile(r"(强制性条文|强制条文|必须执行|一票否决|不得|必须)")
 
 
+_RANGE_GTE_PAT = re.compile(r"(不低于|不少于|至少|大于等于|>=|≥)")
+_RANGE_LTE_PAT = re.compile(r"(不高于|不超过|至多|小于等于|<=|≤)")
+_RANGE_GT_PAT = re.compile(r"(高于|大于|>)")
+_RANGE_LT_PAT = re.compile(r"(低于|小于|<)")
+_EQUAL_PAT = re.compile(r"(等于|为)")
+
+
 def _dedupe(items: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -49,15 +56,38 @@ def parse_filter_spec(question: str, entity_index: Any) -> tuple[dict[str, Any] 
     must: list[dict[str, Any]] = []
     sparse_tokens: list[str] = []
 
+    def _numeric_range_from_window(window: str, value: float) -> dict[str, float]:
+        if _RANGE_GTE_PAT.search(window):
+            return {"gte": value}
+        if _RANGE_LTE_PAT.search(window):
+            return {"lte": value}
+        if _RANGE_GT_PAT.search(window):
+            return {"gt": value}
+        if _RANGE_LT_PAT.search(window):
+            return {"lt": value}
+        if _EQUAL_PAT.search(window):
+            return {"gte": value, "lte": value}
+        return {"gte": value}
+
     kv_match = re.search(r"(\d{2,3})\s*(kV|KV|千伏)", q)
     if kv_match:
-        kv_token = f"{kv_match.group(1)}kV"
-        must.append({"key": "val_voltage_kv", "range": {"gte": int(kv_match.group(1))}})
+        kv_value = int(kv_match.group(1))
+        kv_token = f"{kv_value}kV"
+        left = max(0, kv_match.start() - 8)
+        right = min(len(q), kv_match.end() + 8)
+        window = q[left:right]
+        must.append({"key": "val_voltage_kv", "range": _numeric_range_from_window(window, float(kv_value))})
         sparse_tokens.append(kv_token)
 
+    amount_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(亿|万|万元)", q)
     amount_w = parse_amount_to_wan(q)
     if amount_w is not None:
-        must.append({"key": "val_contract_amount_w", "range": {"gte": amount_w}})
+        window = q
+        if amount_match:
+            left = max(0, amount_match.start() - 8)
+            right = min(len(q), amount_match.end() + 8)
+            window = q[left:right]
+        must.append({"key": "val_contract_amount_w", "range": _numeric_range_from_window(window, amount_w)})
         sparse_tokens.append(str(amount_w))
 
     role_hit = next((r for r in ROLE_KEYWORDS if r in q), None)
@@ -98,3 +128,4 @@ def parse_filter_spec(question: str, entity_index: Any) -> tuple[dict[str, Any] 
     sparse_query = " ".join(_dedupe([q] + sparse_tokens)).strip()
     dense_query_text = q
     return filter_json, sparse_query, dense_query_text
+

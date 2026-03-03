@@ -127,6 +127,48 @@ def _build_expandable_evidence(citations: list[dict[str, Any]]) -> list[dict[str
     return output
 
 
+def _constraint_risk_level(citation: dict[str, Any]) -> str:
+    if bool(citation.get("is_mandatory")):
+        return "high"
+    text = f"{citation.get('excerpt') or ''} {citation.get('chunk_text') or ''}"
+    if re.search(r"(不得|严禁|禁止)", text):
+        return "high"
+    if re.search(r"(必须|应当|应)", text):
+        return "medium"
+    return "low"
+
+
+def _build_constraint_items(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for c in citations:
+        excerpt = _pick_best_evidence_text(c, max_len=240)
+        if not excerpt:
+            continue
+        items.append(
+            {
+                "doc_name": str(c.get("doc_name") or "").strip(),
+                "page_start": c.get("page_start"),
+                "page_end": c.get("page_end"),
+                "clause_id": str(c.get("clause_id") or "").strip(),
+                "is_mandatory": bool(c.get("is_mandatory")),
+                "risk_level": _constraint_risk_level(c),
+                "evidence": excerpt,
+            }
+        )
+    return items
+
+
+def _build_constraint_summary(question: str, constraints: list[dict[str, Any]]) -> str:
+    if not constraints:
+        return f"问题“{question}”当前证据不足，未能提取到可审计的约束条款。"
+    high = sum(1 for item in constraints if item.get("risk_level") == "high")
+    mandatory = sum(1 for item in constraints if item.get("is_mandatory"))
+    return (
+        f"共提取 {len(constraints)} 条约束，其中强制性条款 {mandatory} 条，"
+        f"高风险条款 {high} 条。请逐条核对引用页码后执行。"
+    )
+
+
 def _build_qa_prompt(question: str, citations: list[dict[str, Any]]) -> str:
     blocks: list[str] = []
     for idx, c in enumerate(citations[:5], start=1):
@@ -170,6 +212,7 @@ def chat_with_citations(
     entity_index: Any,
     runtime_config: dict[str, Any] | None = None,
     search_filter: dict[str, Any] | None = None,
+    mode: str = "qa",
 ) -> dict[str, Any]:
     top_k = max(5, int(os.getenv("CHAT_SEARCH_TOP_K", "16")))
     search_res = hybrid_search(
@@ -181,6 +224,19 @@ def chat_with_citations(
         search_filter=search_filter,
     )
     citations = _dedupe_citations(search_res["citations"])
+    selected_mode = str(mode or "qa").strip().lower()
+    if selected_mode == "constraint":
+        constraints = _build_constraint_items(citations)
+        answer = _build_constraint_summary(question=question, constraints=constraints)
+        return {
+            "answer": answer,
+            "mode": "constraint",
+            "constraints": constraints,
+            "citations": citations,
+            "expandable_evidence": _build_expandable_evidence(citations),
+            "llm": {"provider": "local", "model": "constraint-summary"},
+        }
+
     prompt = _build_qa_prompt(question=question, citations=citations)
 
     router = LLMRouter()
@@ -195,6 +251,7 @@ def chat_with_citations(
 
     return {
         "answer": answer,
+        "mode": "qa",
         "citations": citations,
         "expandable_evidence": _build_expandable_evidence(citations),
         "llm": {"provider": llm_res["provider"], "model": llm_res["model"]},

@@ -118,6 +118,29 @@ def infer_is_mandatory(ie_assets: list[dict[str, Any]], text: str) -> bool:
     return bool(re.search(r"(强制性条文|必须|不得|严禁|应当)", raw))
 
 
+def infer_article_path(clause_id: str) -> list[str]:
+    raw = str(clause_id or "").strip()
+    if not raw:
+        return []
+    plain = re.sub(r"\([0-9A-Za-z]+\)$", "", raw)
+    parts = [p for p in plain.split(".") if p]
+    if not parts:
+        return []
+    out: list[str] = []
+    for idx in range(1, len(parts) + 1):
+        out.append(".".join(parts[:idx]))
+    return out
+
+
+def infer_constraint_type(text: str, is_mandatory: bool) -> str:
+    raw = str(text or "")
+    if is_mandatory or re.search(r"(强制性条文|不得|严禁|禁止)", raw):
+        return "mandatory"
+    if re.search(r"(应|应当|宜)", raw):
+        return "recommended"
+    return "informative"
+
+
 def build_payload(
     chunk: dict[str, Any],
     ie_assets: list[dict[str, Any]],
@@ -186,5 +209,15 @@ def build_payload(
     payload["is_mandatory"] = infer_is_mandatory(ie_assets, chunk.get("text", ""))
     payload["standard_no"] = infer_standard_no(ie_assets, chunk.get("text", ""))
     payload["certificate_no"] = infer_certificate_no(ie_assets, chunk.get("text", ""))
+
+    article_path = infer_article_path(clause_id)
+    payload["article_path"] = article_path
+    payload["chapter_no"] = article_path[0] if len(article_path) >= 1 else ""
+    payload["section_no"] = article_path[1] if len(article_path) >= 2 else ""
+    payload["article_no"] = clause_id
+    payload["constraint_type"] = infer_constraint_type(
+        text=chunk.get("text", ""),
+        is_mandatory=bool(payload["is_mandatory"]),
+    )
 
     return payload

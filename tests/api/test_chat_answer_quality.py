@@ -69,6 +69,32 @@ def test_chat_stub_answer_uses_specific_evidence(monkeypatch: pytest.MonkeyPatch
     assert "请参考引用内容" not in result["answer"]
 
 
+def test_chat_constraint_mode_returns_structured_constraints(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_search(*args, **kwargs):
+        return {
+            "citations": [
+                {
+                    "doc_name": "spec.pdf",
+                    "page_start": 18,
+                    "page_end": 18,
+                    "clause_id": "4.12.1(3)",
+                    "is_mandatory": True,
+                    "excerpt": "4.12.1(3) 试验时必须将插件拔出。",
+                    "chunk_text": "4.12.1(3) 试验时必须将插件拔出。",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(chat_orchestrator, "hybrid_search", fake_search)
+
+    result = chat_with_citations("给出约束条款", repo=None, entity_index=_DummyEntityIndex(), mode="constraint")
+    assert result["mode"] == "constraint"
+    assert len(result["constraints"]) == 1
+    assert result["constraints"][0]["clause_id"] == "4.12.1(3)"
+    assert result["constraints"][0]["risk_level"] == "high"
+    assert "强制性条款" in result["answer"]
+
+
 def test_chat_prompt_includes_question_and_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 

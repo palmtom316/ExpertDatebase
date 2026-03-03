@@ -108,6 +108,11 @@ class TestPayloadBuilder(unittest.TestCase):
         self.assertEqual(payload["clause_id"], "4.12.1(3)")
         self.assertEqual(payload["clause_no"], "4.12.1(3)")
         self.assertTrue(payload["is_mandatory"])
+        self.assertEqual(payload["chapter_no"], "4")
+        self.assertEqual(payload["section_no"], "4.12")
+        self.assertEqual(payload["article_no"], "4.12.1(3)")
+        self.assertEqual(payload["article_path"], ["4", "4.12", "4.12.1"])
+        self.assertEqual(payload["constraint_type"], "mandatory")
 
 
 if __name__ == "__main__":

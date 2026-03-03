@@ -28,6 +28,9 @@ ENTITY_INDEX = build_entity_index_from_env()
 @limiter.limit(os.getenv("RATE_LIMIT_CHAT", "30/minute"))
 def chat(request: Request, payload: dict) -> dict:
     question = str(payload.get("question", "")).strip()
+    mode = str(payload.get("mode") or "qa").strip().lower()
+    if mode not in {"qa", "constraint"}:
+        mode = "qa"
     selected_doc_id = str(payload.get("selected_doc_id") or "").strip()
     selected_version_id = str(payload.get("selected_version_id") or "").strip()
     runtime_config = {
@@ -57,4 +60,5 @@ def chat(request: Request, payload: dict) -> dict:
         entity_index=ENTITY_INDEX,
         runtime_config=runtime_config,
         search_filter=search_filter,
+        mode=mode,
     )
