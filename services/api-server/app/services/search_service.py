@@ -283,6 +283,14 @@ class SimpleEmbeddingClient:
             ).strip(),
         }
 
+    def _is_strict_fallback(self, runtime_config: dict[str, Any] | None = None) -> bool:
+        runtime = runtime_config or {}
+        strict_raw = str(runtime.get("embedding_fallback_strict") or os.getenv("EMBEDDING_FALLBACK_STRICT", "")).strip().lower()
+        if strict_raw:
+            return strict_raw in {"1", "true", "yes", "on"}
+        app_env = str(os.getenv("APP_ENV", "development")).strip().lower()
+        return app_env in {"prod", "production"}
+
     def _stub(self, text: str) -> list[float]:
         values = [0.0] * self.dim
         normalized = str(text or "").lower()
@@ -324,6 +332,7 @@ class SimpleEmbeddingClient:
     def embed_text(self, text: str, runtime_config: dict[str, Any] | None = None) -> list[float]:
         cfg = self._resolve_runtime(runtime_config=runtime_config)
         provider = cfg["provider"] or "stub"
+        strict_fallback = self._is_strict_fallback(runtime_config=runtime_config)
         try:
             if provider == "openai":
                 return self._openai_compatible(
@@ -334,11 +343,14 @@ class SimpleEmbeddingClient:
                 )
         except Exception as exc:  # noqa: BLE001
             _log.warning(
-                "embedding failed, falling back to stub provider=%s model=%s error=%s",
+                "embedding_failed provider=%s model=%s strict=%s fallback=stub error=%s",
                 provider,
                 cfg.get("model"),
+                strict_fallback,
                 str(exc),
             )
+            if strict_fallback:
+                raise RuntimeError(f"embedding failed in strict mode: {exc}") from exc
             return self._stub(text)
         return self._stub(text)
 
@@ -514,6 +526,10 @@ def _match_filter(payload: dict[str, Any], filter_json: dict[str, Any] | None) -
     for cond in filter_json.get("must", []):
         key = cond["key"]
         value = payload.get(key)
+        if value is None and key == "clause_no":
+            value = payload.get("clause_id")
+        if value is None and key == "clause_id":
+            value = payload.get("clause_no")
         if "match" in cond:
             any_values = cond["match"].get("any")
             target = cond["match"].get("value")
@@ -525,8 +541,21 @@ def _match_filter(payload: dict[str, Any], filter_json: dict[str, Any] | None) -
         if "range" in cond:
             if value is None:
                 return False
+            try:
+                numeric_value = float(value)
+            except Exception:  # noqa: BLE001
+                return False
             gte = cond["range"].get("gte")
-            if gte is not None and value < gte:
+            lte = cond["range"].get("lte")
+            gt = cond["range"].get("gt")
+            lt = cond["range"].get("lt")
+            if gte is not None and numeric_value < float(gte):
+                return False
+            if lte is not None and numeric_value > float(lte):
+                return False
+            if gt is not None and numeric_value <= float(gt):
+                return False
+            if lt is not None and numeric_value >= float(lt):
                 return False
     return True
 
@@ -752,6 +781,14 @@ def _env_enabled(name: str, default: bool) -> bool:
     return raw not in {"0", "false", "no", "off", ""}
 
 
+def _allow_keyword_search(repo: SearchRepo) -> bool:
+    if not _env_enabled("HYBRID_KEYWORD_ENABLED", default=True):
+        return False
+    if isinstance(repo, QdrantHttpRepo):
+        return _env_enabled("ENABLE_QDRANT_SCROLL_KEYWORD", default=False)
+    return True
+
+
 def _route_hit_id(route: str, doc_id: str, page_no: int, excerpt: str) -> str:
     digest = hashlib.sha256(f"{route}|{doc_id}|{page_no}|{excerpt}".encode("utf-8")).hexdigest()[:12]
     return f"{route}:{doc_id}:{page_no}:{digest}"
@@ -933,7 +970,7 @@ def hybrid_search(
 
     query_vector = SimpleEmbeddingClient().embed_text(dense_query_text, runtime_config=runtime_config)
     vector_top_k = max(top_k, int(os.getenv("HYBRID_VECTOR_TOP_K", "24")))
-    keyword_top_k = max(top_k, int(os.getenv("HYBRID_KEYWORD_TOP_K", "24")))
+    keyword_top_k = max(4, int(os.getenv("HYBRID_KEYWORD_TOP_K", "8")))
     fused_limit = max(top_k * 2, int(os.getenv("HYBRID_FUSED_TOP_K", "40")))
     sparse_top_k = max(top_k, int(os.getenv("HYBRID_SPARSE_TOP_K", "24")))
     structured_top_k = max(top_k, int(os.getenv("HYBRID_STRUCTURED_TOP_K", "24")))
@@ -944,23 +981,9 @@ def hybrid_search(
         if isinstance(payload, dict):
             payload.setdefault("route", "dense")
 
-    keyword_hits: list[dict[str, Any]] = []
-    if _env_enabled("HYBRID_KEYWORD_ENABLED", default=True):
-        try:
-            keyword_hits = repo.keyword_search(query_text=question, filter_json=filter_json, limit=keyword_top_k)
-            for hit in keyword_hits:
-                payload = (hit or {}).get("payload")
-                if isinstance(payload, dict):
-                    payload.setdefault("route", "keyword")
-        except Exception:  # noqa: BLE001
-            keyword_hits = []
-
     route_lists: list[list[dict[str, Any]]] = [vector_hits]
-    route_counts: dict[str, int] = {"dense": len(vector_hits), "keyword": len(keyword_hits)}
+    route_counts: dict[str, int] = {"dense": len(vector_hits), "keyword": 0}
     degraded_routes: dict[str, str] = {}
-
-    if keyword_hits:
-        route_lists.append(keyword_hits)
 
     sparse_candidates: list[dict[str, Any]] = []
     if _env_enabled("ENABLE_PG_BM25", default=True):
@@ -981,6 +1004,23 @@ def hybrid_search(
     if sparse_hits:
         route_lists.append(sparse_hits)
     route_counts["sparse"] = len(sparse_hits)
+
+    keyword_hits: list[dict[str, Any]] = []
+    allow_keyword = _allow_keyword_search(repo)
+    keyword_fallback_only = _env_enabled("HYBRID_KEYWORD_FALLBACK_ONLY", default=True)
+    should_run_keyword = allow_keyword and (not keyword_fallback_only or not sparse_hits)
+    if should_run_keyword:
+        try:
+            keyword_hits = repo.keyword_search(query_text=question, filter_json=filter_json, limit=keyword_top_k)
+            for hit in keyword_hits:
+                payload = (hit or {}).get("payload")
+                if isinstance(payload, dict):
+                    payload.setdefault("route", "keyword")
+        except Exception:  # noqa: BLE001
+            keyword_hits = []
+    if keyword_hits:
+        route_lists.append(keyword_hits)
+    route_counts["keyword"] = len(keyword_hits)
 
     structured_hits: list[dict[str, Any]] = []
     if _env_enabled("ENABLE_STRUCTURED_LOOKUP", default=False):

@@ -55,8 +55,8 @@ def _table_row_chunks(
 def process_mineru_result(doc_id: str, version_id: str, mineru_result: dict[str, Any]) -> dict[str, Any]:
     normalized_blocks, normalized_tables = normalize_result(mineru_result)
     chapters = build_chapters(normalized_blocks)
-    min_chars = max(100, int(os.getenv("CHUNK_MIN_CHARS", "220")))
-    max_chars = max(min_chars + 20, int(os.getenv("CHUNK_MAX_CHARS", "420")))
+    min_chars = max(100, int(os.getenv("CHUNK_MIN_CHARS", "260")))
+    max_chars = max(min_chars + 20, int(os.getenv("CHUNK_MAX_CHARS", "520")))
     overlap_chars = max(0, int(os.getenv("CHUNK_OVERLAP_CHARS", "80")))
     chunks_raw = chunk_chapters(
         doc_id,

@@ -3,9 +3,24 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from sqlalchemy import create_engine, text
+
+
+def _sanitize_query_text(query_text: str) -> str:
+    """Normalize user query for websearch_to_tsquery safety and stability."""
+    q = str(query_text or "").strip()
+    if not q:
+        return ""
+    # Standard numbers often include "/" and "-" (e.g., DL/T-5222-2005).
+    # Replace with spaces to avoid tsquery operator distortion.
+    q = re.sub(r"[/-]+", " ", q)
+    # Remove tsquery operator/control chars.
+    q = re.sub(r"[&|!():*<>]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
 
 
 class PgBM25SparseRetriever:
@@ -23,7 +38,7 @@ class PgBM25SparseRetriever:
     ) -> list[dict[str, Any]]:
         if not self._engine:
             return []
-        q = str(query_text or "").strip()
+        q = _sanitize_query_text(query_text)
         if not q:
             return []
         limit = max(1, int(top_n))
