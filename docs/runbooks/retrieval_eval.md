@@ -50,7 +50,20 @@
 - `hit_at_10`: 前 10 条命中率
 - `evidence_hit_rate_at_10`: Top10 证据命中率
 - `mrr`: 平均倒数排名（越高越好）
+- `clause_hit_at_k`: 条文型查询在 TopK 内命中预期条文号的比例（ClauseHit@k）
+- `constraint_coverage`: 约束规格（条文号/强制性/约束类型）在 TopK 的覆盖率（ConstraintCoverage）
+- `citation_completeness`: 相关命中文档中“文档+页码+片段”完整引用比例（CitationCompleteness）
 - `details`: 每条 query 的首个相关命中排名 `rank` 和 top1 样本
 - `failed_samples`: 未命中的失败样本集合
 - `release_gate`: 切流量门禁结论（阈值与通过状态）
 - `allow_traffic`: `release_gate.passed` 的布尔镜像，用于流水线判定
+
+默认门禁阈值（可通过环境变量覆盖）：
+
+- `EVAL_MIN_QUERIES`（默认 `30`）
+- `EVAL_MIN_HIT10`（默认 `0.75`）
+- `EVAL_MIN_MRR`（默认 `0.45`）
+- `EVAL_MIN_EVIDENCE_HIT10`（默认 `0.80`）
+- `EVAL_MIN_CLAUSE_HIT_AT_K`（默认 `0.70`，仅在数据集包含条文预期时生效）
+- `EVAL_MIN_CONSTRAINT_COVERAGE`（默认 `0.70`，仅在数据集包含约束规格时生效）
+- `EVAL_MIN_CITATION_COMPLETENESS`（默认 `0.85`，仅在存在相关命中时生效）

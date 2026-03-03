@@ -37,6 +37,9 @@ def test_evaluate_retrieval_hit_and_mrr() -> None:
     assert abs(result["evidence_hit_rate_at_10"] - (2 / 3)) < 1e-9
     # RR = 1 + 1/2 + 0
     assert abs(result["mrr"] - (1.5 / 3)) < 1e-9
+    assert abs(result["clause_hit_at_k"] - 0.0) < 1e-9
+    assert abs(result["constraint_coverage"] - 0.0) < 1e-9
+    assert abs(result["citation_completeness"] - 0.0) < 1e-9
     assert result["failed_samples"]
     assert result["release_gate"]["passed"] is False
 
@@ -62,3 +65,60 @@ def test_evaluate_retrieval_relevant_any() -> None:
     assert abs(result["hit_at_5"] - 1.0) < 1e-9
     assert abs(result["mrr"] - 0.5) < 1e-9
     assert abs(result["evidence_hit_rate_at_10"] - 1.0) < 1e-9
+
+
+def test_evaluate_retrieval_constraint_metrics() -> None:
+    samples = [
+        {
+            "query": "4.12.1(3) 强制性条文",
+            "expected_doc_id": "spec_doc",
+            "expected_clause_id": "4.12.1(3)",
+            "expected_is_mandatory": True,
+            "expected_constraint_type": "mandatory",
+        },
+        {
+            "query": "5.1.2 建议性条文",
+            "expected_doc_id": "spec_doc",
+            "expected_clause_ids": ["5.1.2"],
+            "constraint_specs": [{"clause_id": "5.1.2", "constraint_type": "recommended"}],
+        },
+    ]
+
+    def fake_search(sample: dict) -> list[dict]:
+        if "4.12.1(3)" in sample["query"]:
+            return [
+                {
+                    "payload": {
+                        "doc_id": "spec_doc",
+                        "doc_name": "spec.pdf",
+                        "clause_id": "4.12.1(3)",
+                        "clause_no": "4.12.1(3)",
+                        "article_no": "4.12.1(3)",
+                        "is_mandatory": True,
+                        "constraint_type": "mandatory",
+                        "page_start": 18,
+                        "page_end": 18,
+                        "excerpt": "4.12.1(3) 试验时必须将插件拔出。",
+                    }
+                }
+            ]
+        return [
+            {
+                "payload": {
+                    "doc_id": "spec_doc",
+                    "doc_name": "spec.pdf",
+                    "clause_id": "5.1.2",
+                    "clause_no": "5.1.2",
+                    "article_no": "5.1.2",
+                    "constraint_type": "recommended",
+                    "page_start": 30,
+                    "page_end": 30,
+                    "excerpt": "5.1.2 宜采用低损耗设备。",
+                }
+            }
+        ]
+
+    result = evaluate_retrieval_samples(samples=samples, search_fn=fake_search, top_k=10)
+    assert abs(result["clause_hit_at_k"] - 1.0) < 1e-9
+    assert abs(result["constraint_coverage"] - 1.0) < 1e-9
+    assert abs(result["citation_completeness"] - 1.0) < 1e-9
