@@ -25,3 +25,4 @@ def test_ensure_payload_indexes_posts_index_requests(m_put: Mock) -> None:
     assert '/collections/chunks_v1/index' in first_call.kwargs['url']
     assert any(spec.get("field_name") == "clause_id" for spec in DEFAULT_PAYLOAD_INDEXES)
     assert any(spec.get("field_name") == "is_mandatory" and spec.get("field_schema") == "bool" for spec in DEFAULT_PAYLOAD_INDEXES)
+    assert any(spec.get("field_name") == "table_repr" and spec.get("field_schema") == "keyword" for spec in DEFAULT_PAYLOAD_INDEXES)

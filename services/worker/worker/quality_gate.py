@@ -58,6 +58,25 @@ def _looks_noisy_chunk(text: str) -> bool:
     return False
 
 
+def _looks_noisy_table_row_chunk(text: str) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return True
+    if _looks_noisy_chunk(s):
+        return True
+
+    cells = [part.strip() for part in re.split(r"[|｜\t]", s) if part.strip()]
+    if not cells:
+        return _looks_noisy_chunk(s)
+
+    noisy_cells = 0
+    for cell in cells:
+        if _looks_noisy_chunk(cell):
+            noisy_cells += 1
+
+    return noisy_cells >= max(2, len(cells) - 1)
+
+
 def _has_evidence_signal(text: str) -> bool:
     s = str(text or "")
     if re.search(r"\b\d+\.\d+(?:\.\d+)?\b", s):
@@ -81,13 +100,18 @@ def filter_chunks_for_indexing(chunks: list[dict[str, Any]]) -> tuple[list[dict[
     for chunk in chunks:
         text = str((chunk or {}).get("text") or "").strip()
         normalized = re.sub(r"\s+", " ", text)
-        signature = re.sub(r"[\s\W_]+", "", normalized.lower())
-        is_table_row = str((chunk or {}).get("source_type") or "").strip() == "table_row" or str((chunk or {}).get("chunk_id") or "").startswith("tbl_")
+        source_type = str((chunk or {}).get("source_type") or "").strip()
+        signature = f"{source_type}|" + re.sub(r"[\s\W_]+", "", normalized.lower())
+        is_table_row = source_type in {"table_row", "cross_page_table_row"} or str((chunk or {}).get("chunk_id") or "").startswith("tbl_")
         if signature and signature in seen:
             dropped_dup += 1
             continue
 
-        if not is_table_row and _looks_noisy_chunk(text):
+        if is_table_row:
+            if _looks_noisy_table_row_chunk(text):
+                dropped_noise += 1
+                continue
+        elif _looks_noisy_chunk(text):
             dropped_noise += 1
             continue
 

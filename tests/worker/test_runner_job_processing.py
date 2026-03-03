@@ -66,3 +66,9 @@ def test_process_document_job_updates_status_and_upserts_chunks() -> None:
     first = rt.qdrant_repo.items[0]
     assert str(first["id"]).startswith("doc_1:ver_1:")
     assert first["payload"]["version_id"] == "ver_1"
+    assert "table_repair_counts" in summary
+    assert summary["table_repair_counts"]["none"] >= 0
+    assert summary["table_repair_counts"]["stub"] >= 0
+    assert summary["table_repair_counts"]["vl_fallback"] >= 0
+    assert isinstance(summary.get("table_vl_attempted"), int)
+    assert isinstance(summary.get("table_vl_applied"), int)

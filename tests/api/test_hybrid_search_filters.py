@@ -482,6 +482,169 @@ class TestHybridSearchFilters(unittest.TestCase):
             os.environ.clear()
             os.environ.update(old)
 
+    def test_hybrid_search_table_query_detects_numeric_unit_pattern(self) -> None:
+        repo = InMemoryQdrantRepo()
+        repo.upsert(
+            point_id="plain",
+            vector=[0.1, 0.2],
+            payload={
+                "doc_id": "doc_a",
+                "version_id": "ver_a",
+                "doc_name": "spec.pdf",
+                "page_start": 3,
+                "page_end": 3,
+                "excerpt": "设备绝缘试验要求。",
+                "chunk_text": "设备绝缘试验要求。",
+                "source_type": "text",
+                "page_type": "other",
+            },
+        )
+        repo.upsert(
+            point_id="table-row",
+            vector=[0.2, 0.1],
+            payload={
+                "doc_id": "doc_a",
+                "version_id": "ver_a",
+                "doc_name": "spec.pdf",
+                "page_start": 5,
+                "page_end": 5,
+                "excerpt": "额定电压|110kV|主变",
+                "chunk_text": "额定电压|110kV|主变",
+                "source_type": "table_row",
+                "page_type": "table",
+                "val_voltage_kv": 110,
+            },
+        )
+
+        old = dict(os.environ)
+        os.environ["ENABLE_RERANK"] = "0"
+        os.environ["HYBRID_KEYWORD_ENABLED"] = "0"
+        os.environ["HYBRID_POST_KEYWORD_BOOST"] = "1"
+        try:
+            result = hybrid_search(
+                question="110kV 主变额定电压",
+                repo=repo,
+                entity_index=DummyEntityIndex(),
+                top_k=2,
+            )
+            self.assertEqual(result["citations"][0].get("source_type"), "table_row")
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
+    def test_hybrid_search_table_sparse_filter_prefers_table_rows(self) -> None:
+        class _RepoSparseFilter:
+            def search(self, query_vector, filter_json=None, limit=5):
+                return []
+
+            def keyword_search(self, query_text, filter_json=None, limit=20):
+                return []
+
+            def delete_by_version(self, version_id: str):
+                return None
+
+        captured_filters: list[dict | None] = []
+
+        class _FakePgBm25:
+            def search(self, query_text, top_n=20, filters=None):
+                captured_filters.append(filters)
+                return []
+
+        old = dict(os.environ)
+        os.environ["ENABLE_RERANK"] = "0"
+        os.environ["HYBRID_KEYWORD_ENABLED"] = "0"
+        os.environ["ENABLE_PG_BM25"] = "1"
+        os.environ["HYBRID_TABLE_QUERY_SPARSE_FILTER"] = "1"
+        try:
+            with patch("app.services.search_service.PgBM25SparseRetriever", return_value=_FakePgBm25()):
+                hybrid_search(
+                    question="请给出110kV参数",
+                    repo=_RepoSparseFilter(),
+                    entity_index=DummyEntityIndex(),
+                    top_k=2,
+                )
+            self.assertTrue(captured_filters)
+            must = (captured_filters[0] or {}).get("must") or []
+            source_type = next(item for item in must if item.get("key") == "source_type")
+            self.assertEqual((source_type.get("match") or {}).get("any"), ["table_row", "cross_page_table_row"])
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+    def test_hybrid_search_attaches_explanation_sibling_for_clause_route(self) -> None:
+        class _RepoExplainSibling:
+            def search(self, query_vector, filter_json=None, limit=5):
+                return []
+
+            def keyword_search(self, query_text, filter_json=None, limit=20):
+                must = (filter_json or {}).get("must") or []
+                is_explanation_lookup = any(
+                    item.get("key") == "source_type" and (item.get("match") or {}).get("value") == "explanation"
+                    for item in must
+                )
+                if is_explanation_lookup:
+                    return [
+                        {
+                            "id": "exp-321",
+                            "score": 7.5,
+                            "payload": {
+                                "doc_id": "doc_spec",
+                                "version_id": "ver_spec",
+                                "doc_name": "spec.pdf",
+                                "page_start": 41,
+                                "page_end": 41,
+                                "excerpt": "3.2.1 条文说明：设备参数应满足运行要求。",
+                                "chunk_text": "3.2.1 条文说明：设备参数应满足运行要求。",
+                                "source_type": "explanation",
+                                "clause_id": "3.2.1",
+                            },
+                        }
+                    ]
+                return [
+                    {
+                        "id": "clause-main",
+                        "score": 9.0,
+                        "payload": {
+                            "doc_id": "doc_spec",
+                            "version_id": "ver_spec",
+                            "doc_name": "spec.pdf",
+                            "page_start": 18,
+                            "page_end": 18,
+                            "excerpt": "3.2.1 试验电压应符合表3.2.1要求。",
+                            "chunk_text": "3.2.1 试验电压应符合表3.2.1要求。",
+                            "source_type": "text",
+                            "clause_id": "3.2.1",
+                        },
+                    }
+                ]
+
+            def delete_by_version(self, version_id: str):
+                return None
+
+        old = dict(os.environ)
+        os.environ["ENABLE_RERANK"] = "0"
+        os.environ["HYBRID_POST_KEYWORD_BOOST"] = "0"
+        os.environ["HYBRID_ATTACH_EXPLANATION"] = "1"
+        try:
+            result = hybrid_search(
+                question="请给出 3.2.1 条原文",
+                repo=_RepoExplainSibling(),
+                entity_index=DummyEntityIndex(),
+                top_k=3,
+            )
+            self.assertEqual(len(result["citations"]), 2)
+            self.assertEqual(result["citations"][0].get("source_type"), "text")
+            self.assertEqual(result["citations"][1].get("source_type"), "explanation")
+            self.assertEqual(result["citations"][1].get("route"), "explanation_sibling")
+            self.assertEqual(result["citations"][1].get("clause_id"), "3.2.1")
+            stats = result["debug"]["explanation_attach"]
+            self.assertEqual(stats["clause_candidates"], 1)
+            self.assertEqual(stats["clause_lookups"], 1)
+            self.assertEqual(stats["clause_hits"], 1)
+            self.assertEqual(stats["attached"], 1)
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
 
 if __name__ == "__main__":
     unittest.main()

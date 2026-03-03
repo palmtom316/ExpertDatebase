@@ -39,3 +39,24 @@ def test_filter_keeps_short_scope_clause_with_signal_keywords() -> None:
     assert "scope_1" in ids
     assert "def_1" in ids
     assert stats["dropped_short"] == 0
+
+
+def test_filter_drops_noisy_table_row_chunks() -> None:
+    chunks = [
+        {
+            "chunk_id": "tbl_t_9_1_1",
+            "source_type": "table_row",
+            "text": "参数|数值|备注 | %PDF-1.7 obj<</Filter/FlateDecode ... endstream",
+        },
+        {
+            "chunk_id": "tbl_t_9_1_2",
+            "source_type": "cross_page_table_row",
+            "text": "参数|数值|备注 | 额定电压|110kV|主变",
+        },
+    ]
+
+    out, stats = filter_chunks_for_indexing(chunks)
+    ids = [x.get("chunk_id") for x in out]
+    assert "tbl_t_9_1_1" not in ids
+    assert "tbl_t_9_1_2" in ids
+    assert stats["dropped_noise"] >= 1

@@ -33,6 +33,21 @@ def test_vl_recognizer_fallback_without_key() -> None:
     )
     assert out["enabled"] is False
     assert out["items"][0]["recognized_text"] == "参数表"
+    assert out["items"][0]["fallback_reason"] == "provider_disabled_or_missing_key"
+
+
+def test_vl_recognizer_table_repair_fallback_confidence_shape() -> None:
+    recognizer = VLRecognizer()
+    out = recognizer.enhance(
+        candidates=[{"visual_type": "table", "page_no": 1, "text_hint": "表头|列A\n行1|值1"}],
+        runtime_config={"vl_provider": "openai", "vl_api_key": ""},
+        task="table_repair",
+    )
+    item = out["items"][0]
+    assert out["task"] == "table_repair"
+    assert item["recognized_text"] == "表头|列A 行1|值1"
+    assert item["fallback_reason"] == "provider_disabled_or_missing_key"
+    assert float(item.get("confidence") or 0.0) == 0.0
 
 
 def test_merge_visual_text_into_mineru_adds_blocks_and_tables() -> None:

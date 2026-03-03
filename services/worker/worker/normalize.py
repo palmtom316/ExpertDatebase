@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
+from difflib import SequenceMatcher
 from typing import Any
 
 
@@ -58,6 +60,25 @@ def _table_header(raw_text: str) -> str:
     if not lines:
         return ""
     return _strip_continuation_marker(lines[0]).lower()
+
+
+def _extract_header_signature(raw_text: str) -> str:
+    lines = [line.strip() for line in str(raw_text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    first = _strip_continuation_marker(lines[0])
+    header_line = first if first else (lines[1] if len(lines) >= 2 else "")
+    header_line = re.sub(r"\s+", " ", header_line).strip().lower()
+    header_line = re.sub(r"[｜|]", "|", header_line)
+    header_line = re.sub(r"[^\w\u4e00-\u9fff|]+", "", header_line)
+    return header_line
+
+
+def _table_header_similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(a=a, b=b).ratio()
 
 
 def _signature_for_repeat(text: str) -> str:
@@ -160,9 +181,13 @@ def _merge_cross_page_tables(tables: list[dict[str, Any]]) -> list[dict[str, Any
 
         prev_header = _table_header(prev.get("raw_text") or "")
         curr_header = _table_header(current.get("raw_text") or "")
+        prev_sig = _extract_header_signature(prev.get("raw_text") or "")
+        curr_sig = _extract_header_signature(current.get("raw_text") or "")
         is_cont = _looks_cross_page_table(text)
         same_header = bool(prev_header and curr_header and prev_header == curr_header)
-        if not (is_cont or same_header):
+        header_similarity_threshold = float(os.getenv("CROSS_PAGE_HEADER_SIMILARITY", "0.78"))
+        similar_header = _table_header_similarity(prev_sig, curr_sig) >= header_similarity_threshold
+        if not (is_cont or same_header or similar_header):
             merged.append(current)
             continue
 

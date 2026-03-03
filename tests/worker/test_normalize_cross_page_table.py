@@ -31,3 +31,27 @@ def test_normalize_merges_cross_page_table() -> None:
     assert merged["page_end"] == 5
     assert "1|<100|250" in merged["raw_text"]
     assert "2|<500|500" in merged["raw_text"]
+
+
+def test_normalize_merges_cross_page_table_with_similar_header() -> None:
+    mineru_result = {
+        "pages": [
+            {
+                "page_no": 10,
+                "blocks": [],
+                "tables": [{"raw_text": "序号|额定电压(kV)|设备名称\n1|110|断路器"}],
+            },
+            {
+                "page_no": 11,
+                "blocks": [],
+                "tables": [{"raw_text": "序号 | 额定电压kV | 设备名称\n2|220|隔离开关"}],
+            },
+        ]
+    }
+    _, tables = normalize_result(mineru_result)
+    assert len(tables) == 1
+    merged = tables[0]
+    assert merged["page_start"] == 10
+    assert merged["page_end"] == 11
+    assert "1|110|断路器" in merged["raw_text"]
+    assert "2|220|隔离开关" in merged["raw_text"]

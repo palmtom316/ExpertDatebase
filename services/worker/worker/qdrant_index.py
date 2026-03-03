@@ -19,6 +19,7 @@ DEFAULT_PAYLOAD_INDEXES: list[dict[str, str]] = [
     {"field_name": "article_path", "field_schema": "keyword"},
     {"field_name": "constraint_type", "field_schema": "keyword"},
     {"field_name": "page_type", "field_schema": "keyword"},
+    {"field_name": "table_repr", "field_schema": "keyword"},
     {"field_name": "entity_person_ids", "field_schema": "keyword"},
     {"field_name": "entity_project_ids", "field_schema": "keyword"},
     {"field_name": "entity_equipment_ids", "field_schema": "keyword"},

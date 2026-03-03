@@ -755,8 +755,27 @@ def _is_table_query(question: str) -> bool:
     q = str(question or "").strip().lower()
     if not q:
         return False
-    hints = ["表", "表格", "续表", "跨页", "行", "列", "参数表", "table", "rows", "columns"]
-    return any(token in q for token in hints)
+    hints = ["表", "表格", "续表", "跨页", "行", "列", "参数表", "清单", "table", "rows", "columns", "schedule"]
+    if any(token in q for token in hints):
+        return True
+
+    if re.search(r"\d+(?:\.\d+)?\s*(kv|mva|kw|mw|v|a|hz|pa|mpa|mm|cm|m|km|℃|万元|万|亿|%|％)", q, flags=re.IGNORECASE):
+        return True
+
+    return False
+
+
+def _table_query_extra_filter(enabled: bool) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    return {
+        "must": [
+            {
+                "key": "source_type",
+                "match": {"any": ["table_row", "cross_page_table_row"]},
+            }
+        ]
+    }
 
 
 def _to_citation(payload: dict[str, Any]) -> dict[str, Any]:
@@ -773,7 +792,81 @@ def _to_citation(payload: dict[str, Any]) -> dict[str, Any]:
         "table_id": payload.get("table_id"),
         "row_index": payload.get("row_index"),
         "clause_id": payload.get("clause_id") or payload.get("clause_no"),
+        "table_repr": payload.get("table_repr"),
     }
+
+
+def _attach_explanation_siblings(
+    citations: list[dict[str, Any]],
+    repo: SearchRepo,
+    filter_json: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    stats = {
+        "clause_candidates": 0,
+        "clause_lookups": 0,
+        "clause_hits": 0,
+        "attached": 0,
+    }
+    if not citations or not _env_enabled("HYBRID_ATTACH_EXPLANATION", default=False):
+        return citations, stats
+
+    per_clause_limit = max(1, int(os.getenv("HYBRID_EXPLANATION_PER_CLAUSE", "1")))
+    seen_keys: set[tuple[str, Any, Any, str, str]] = set()
+    out: list[dict[str, Any]] = []
+    searched_clause: set[str] = set()
+    clauses_with_hits: set[str] = set()
+
+    def _add(c: dict[str, Any], is_attached: bool = False) -> bool:
+        key = (
+            str(c.get("doc_id") or "").strip(),
+            c.get("page_start"),
+            c.get("page_end"),
+            str(c.get("source_type") or "").strip(),
+            str(c.get("clause_id") or "").strip(),
+        )
+        if key in seen_keys:
+            return False
+        seen_keys.add(key)
+        out.append(c)
+        if is_attached:
+            stats["attached"] += 1
+        return True
+
+    for citation in citations:
+        _add(citation)
+        clause_id = str(citation.get("clause_id") or "").strip()
+        if not clause_id:
+            continue
+        stats["clause_candidates"] += 1
+        if clause_id in searched_clause:
+            continue
+        searched_clause.add(clause_id)
+        stats["clause_lookups"] += 1
+
+        sibling_filter = _merge_filters(
+            filter_json,
+            {
+                "must": [
+                    {"key": "source_type", "match": {"value": "explanation"}},
+                    {"key": "clause_id", "match": {"value": clause_id}},
+                ]
+            },
+        )
+        try:
+            sibling_hits = repo.keyword_search(query_text=clause_id, filter_json=sibling_filter, limit=per_clause_limit)
+        except Exception:  # noqa: BLE001
+            sibling_hits = []
+
+        for hit in sibling_hits:
+            payload = (hit or {}).get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+            payload.setdefault("route", "explanation_sibling")
+            if _add(_to_citation(payload), is_attached=True):
+                clauses_with_hits.add(clause_id)
+
+    stats["clause_hits"] = len(clauses_with_hits)
+    return out, stats
 
 
 def _env_enabled(name: str, default: bool) -> bool:
@@ -907,6 +1000,11 @@ def hybrid_search(
                 hits = _post_keyword_boost_hits(question=question, hits=hits)
             hits = hits[:top_k]
             citations = [_to_citation((h or {}).get("payload", {})) for h in hits]
+            citations, explanation_stats = _attach_explanation_siblings(
+                citations=citations,
+                repo=repo,
+                filter_json=chapter_filter,
+            )
             return {
                 "hits": hits,
                 "citations": citations,
@@ -914,6 +1012,7 @@ def hybrid_search(
                 "debug": {
                     "route_counts": {"chapter_prefix": len(chapter_hits)},
                     "degraded_routes": {},
+                    "explanation_attach": explanation_stats,
                 },
             }
 
@@ -956,6 +1055,11 @@ def hybrid_search(
                 hits = _post_keyword_boost_hits(question=question, hits=hits)
             hits = hits[:top_k]
             citations = [_to_citation((h or {}).get("payload", {})) for h in hits]
+            citations, explanation_stats = _attach_explanation_siblings(
+                citations=citations,
+                repo=repo,
+                filter_json=clause_no_filter,
+            )
             return {
                 "hits": hits,
                 "citations": citations,
@@ -963,12 +1067,16 @@ def hybrid_search(
                 "debug": {
                     "route_counts": {"clause_exact": len(clause_hits_exact)},
                     "degraded_routes": {},
+                    "explanation_attach": explanation_stats,
                 },
             }
         # If exact route yields nothing, keep clause fallback filter for dense/keyword routes.
         filter_json = clause_no_filter
 
     query_vector = SimpleEmbeddingClient().embed_text(dense_query_text, runtime_config=runtime_config)
+    table_query = _is_table_query(question)
+    table_sparse_enabled = table_query and _env_enabled("HYBRID_TABLE_QUERY_SPARSE_FILTER", default=False)
+    table_sparse_filter = _merge_filters(filter_json, _table_query_extra_filter(table_sparse_enabled))
     vector_top_k = max(top_k, int(os.getenv("HYBRID_VECTOR_TOP_K", "24")))
     keyword_top_k = max(4, int(os.getenv("HYBRID_KEYWORD_TOP_K", "8")))
     fused_limit = max(top_k * 2, int(os.getenv("HYBRID_FUSED_TOP_K", "40")))
@@ -989,14 +1097,23 @@ def hybrid_search(
     if _env_enabled("ENABLE_PG_BM25", default=True):
         try:
             sparse_candidates.extend(
-                PgBM25SparseRetriever().search(query_text=sparse_query, top_n=sparse_top_k, filters=filter_json)
+                PgBM25SparseRetriever().search(
+                    query_text=sparse_query,
+                    top_n=sparse_top_k,
+                    filters=table_sparse_filter if table_sparse_enabled else filter_json,
+                )
             )
         except Exception as exc:  # noqa: BLE001
             degraded_routes["pg_bm25"] = str(exc)
 
     if _env_enabled("ENABLE_SIRCHMUNK", default=False):
         try:
-            sparse_candidates.extend(SirchmunkClient().search(query_text=sparse_query, top_n=sparse_top_k))
+            sparse_candidates.extend(
+                SirchmunkClient().search(
+                    query_text=sparse_query,
+                    top_n=sparse_top_k,
+                )
+            )
         except Exception as exc:  # noqa: BLE001
             degraded_routes["sparse"] = str(exc)
 
@@ -1062,6 +1179,7 @@ def hybrid_search(
     hits = hits[:top_k]
 
     citations = [_to_citation((h or {}).get("payload", {})) for h in hits]
+    citations, explanation_stats = _attach_explanation_siblings(citations=citations, repo=repo, filter_json=filter_json)
     return {
         "hits": hits,
         "citations": citations,
@@ -1069,5 +1187,6 @@ def hybrid_search(
         "debug": {
             "route_counts": route_counts,
             "degraded_routes": degraded_routes,
+            "explanation_attach": explanation_stats,
         },
     }

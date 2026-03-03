@@ -146,7 +146,34 @@ class VLRecognizer:
             "model": model,
         }
 
-    def _request_once(self, candidate: dict[str, Any], cfg: dict[str, str]) -> str:
+    def _prompt_for_task(self, task: str, visual_type: str, text_hint: str) -> str:
+        if task == "table_repair":
+            return (
+                "你是投标文档表格修复助手。请把表格信息输出为可切分的行文本："
+                "第一行为表头，后续行为数据行；优先使用竖线'|'分隔列；"
+                "不要输出解释、不要使用Markdown代码块。"
+                f"视觉类型={visual_type}。已知提示：{text_hint or '无'}"
+            )
+        return (
+            "你是投标文档解析助手。请识别并提取该视觉片段的关键信息，"
+            f"视觉类型={visual_type}。输出简洁中文文本，不要解释。已知提示：{text_hint or '无'}"
+        )
+
+    def _estimate_confidence(self, task: str, text: str, fallback_reason: str) -> float:
+        if fallback_reason:
+            return 0.0
+        if not text:
+            return 0.0
+        if task == "table_repair":
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            if len(lines) >= 2 and any("|" in line for line in lines):
+                return 0.85
+            if len(lines) >= 2:
+                return 0.6
+            return 0.35
+        return 0.75
+
+    def _request_once(self, candidate: dict[str, Any], cfg: dict[str, str], task: str, timeout_s: float) -> str:
         visual_type = str(candidate.get("visual_type") or "visual")
         text_hint = _norm_text(candidate.get("text_hint"), limit=1000)
         image_url = str(candidate.get("image_url") or "").strip()
@@ -154,10 +181,7 @@ class VLRecognizer:
         content: list[dict[str, Any]] = [
             {
                 "type": "text",
-                "text": (
-                    "你是投标文档解析助手。请识别并提取该视觉片段的关键信息，"
-                    f"视觉类型={visual_type}。输出简洁中文文本，不要解释。已知提示：{text_hint or '无'}"
-                ),
+                "text": self._prompt_for_task(task=task, visual_type=visual_type, text_hint=text_hint),
             }
         ]
         if image_url:
@@ -171,7 +195,7 @@ class VLRecognizer:
                 "messages": [{"role": "user", "content": content}],
                 "temperature": 0,
             },
-            timeout=self.timeout_s,
+            timeout=timeout_s,
         )
         resp.raise_for_status()
         body = resp.json()
@@ -182,30 +206,62 @@ class VLRecognizer:
         )
         return _norm_text(text, limit=1600)
 
-    def enhance(self, candidates: list[dict[str, Any]], runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    def enhance(
+        self,
+        candidates: list[dict[str, Any]],
+        runtime_config: dict[str, Any] | None = None,
+        task: str = "visual_summary",
+        max_items: int | None = None,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
         cfg = self._resolve_runtime(runtime_config=runtime_config)
-        max_items = max(1, int(os.getenv("VL_MAX_ITEMS_PER_DOC", "40")))
-        limited = candidates[:max_items]
+        env_max = max(1, int(os.getenv("VL_MAX_ITEMS_PER_DOC", "40")))
+        limit = max(1, int(max_items)) if max_items is not None else env_max
+        limited = candidates[:limit]
+        req_timeout = float(timeout_s) if timeout_s is not None else self.timeout_s
 
         if cfg["provider"] in {"", "stub"} or not cfg["api_key"]:
+            items = []
+            for item in limited:
+                recognized_text = _norm_text(item.get("text_hint"), limit=1600)
+                fallback_reason = "provider_disabled_or_missing_key"
+                items.append(
+                    {
+                        **item,
+                        "recognized_text": recognized_text,
+                        "confidence": self._estimate_confidence(task=task, text=recognized_text, fallback_reason=fallback_reason),
+                        "fallback_reason": fallback_reason,
+                    }
+                )
             return {
                 "enabled": False,
                 "provider": cfg["provider"] or "stub",
                 "model": cfg["model"] or "",
-                "items": [{**item, "recognized_text": _norm_text(item.get("text_hint"), limit=1600)} for item in limited],
+                "task": task,
+                "items": items,
             }
 
         items: list[dict[str, Any]] = []
         for item in limited:
+            fallback_reason = ""
             try:
-                text = self._request_once(item, cfg)
+                text = self._request_once(item, cfg, task=task, timeout_s=req_timeout)
             except Exception:  # noqa: BLE001
                 text = _norm_text(item.get("text_hint"), limit=1600)
-            items.append({**item, "recognized_text": text})
+                fallback_reason = "request_error"
+            items.append(
+                {
+                    **item,
+                    "recognized_text": text,
+                    "confidence": self._estimate_confidence(task=task, text=text, fallback_reason=fallback_reason),
+                    "fallback_reason": fallback_reason,
+                }
+            )
         return {
             "enabled": True,
             "provider": cfg["provider"],
             "model": cfg["model"],
+            "task": task,
             "items": items,
         }
 

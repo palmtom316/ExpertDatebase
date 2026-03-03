@@ -130,6 +130,92 @@ def _export_sparse_sidecar_pages(mineru_result: dict[str, Any], doc_id: str) -> 
     return {"enabled": True, "root": str(target_dir), "pages_written": written}
 
 
+def _env_enabled(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw not in {"0", "false", "no", "off", ""}
+
+
+def _doc_type_allowed_for_table_vl(doc_type: str) -> bool:
+    raw = str(os.getenv("WORKER_TABLE_VL_FALLBACK_DOC_TYPES", "规范规程")).strip()
+    allow_types = {x.strip() for x in raw.split(",") if x.strip()}
+    if not allow_types:
+        return True
+    return str(doc_type or "").strip() in allow_types
+
+
+def _table_vl_timeout_s() -> float:
+    raw = str(os.getenv("WORKER_TABLE_VL_TIMEOUT_S", "")).strip()
+    if not raw:
+        return float(os.getenv("VL_HTTP_TIMEOUT_S", "30"))
+    try:
+        return float(raw)
+    except Exception:  # noqa: BLE001
+        return float(os.getenv("VL_HTTP_TIMEOUT_S", "30"))
+
+
+def _build_table_repair_context(
+    mineru_result: dict[str, Any],
+    doc_type: str,
+    runtime_config: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    if not _env_enabled("WORKER_ENABLE_TABLE_VL_FALLBACK", default=False):
+        return {}, {"attempted": 0, "applied": 0}
+    if not _doc_type_allowed_for_table_vl(doc_type):
+        return {}, {"attempted": 0, "applied": 0}
+
+    pages = mineru_result.get("pages")
+    if not isinstance(pages, list):
+        return {}, {"attempted": 0, "applied": 0}
+
+    candidates: list[dict[str, Any]] = []
+    for page_index, page in enumerate(pages, start=1):
+        if not isinstance(page, dict):
+            continue
+        page_no = int(page.get("page_no") or page_index)
+        tables = page.get("tables")
+        if not isinstance(tables, list):
+            continue
+        for idx, table in enumerate(tables, start=1):
+            if not isinstance(table, dict):
+                continue
+            raw_text = str(table.get("raw_text") or "").strip()
+            if not raw_text:
+                continue
+            table_id = f"t_{page_no}_{idx}"
+            candidates.append(
+                {
+                    "visual_type": "table",
+                    "page_no": page_no,
+                    "source": "table",
+                    "table_idx": idx,
+                    "table_id": table_id,
+                    "text_hint": raw_text[:1000],
+                    "image_url": str(table.get("url") or table.get("image_url") or "").strip(),
+                }
+            )
+
+    max_items = max(1, int(os.getenv("WORKER_TABLE_VL_MAX_ITEMS_PER_DOC", "20")))
+    selected = candidates[:max_items]
+    if not selected:
+        return {}, {"attempted": 0, "applied": 0}
+
+    vl_result = VLRecognizer().enhance(
+        selected,
+        runtime_config=runtime_config,
+        task="table_repair",
+        max_items=max_items,
+        timeout_s=_table_vl_timeout_s(),
+    )
+    repairs: dict[str, dict[str, Any]] = {}
+    for item in vl_result.get("items") or []:
+        table_id = str(item.get("table_id") or "").strip()
+        if not table_id:
+            continue
+        repairs[table_id] = item
+
+    return repairs, {"attempted": len(selected), "applied": len(repairs)}
+
+
 def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, Any]:
     doc_id = str(job["doc_id"])
     version_id = str(job["version_id"])
@@ -147,6 +233,14 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     visual_candidates = extract_visual_candidates(mineru_result)
     vl_result = VLRecognizer().enhance(visual_candidates, runtime_config=runtime_config)
     mineru_result = merge_visual_text_into_mineru(mineru_result, vl_result.get("items") or [])
+
+    doc_type_for_vl = str(job.get("doc_type") or "规范规程")
+    table_vl_repairs, table_vl_stats = _build_table_repair_context(
+        mineru_result=mineru_result,
+        doc_type=doc_type_for_vl,
+        runtime_config=runtime_config,
+    )
+
     sparse_sidecar = _export_sparse_sidecar_pages(mineru_result=mineru_result, doc_id=doc_id)
     mineru_json_key = f"mineru/{doc_id}/{version_id}/mineru.pages.json"
     mineru_md_key = f"mineru/{doc_id}/{version_id}/mineru.pages.md"
@@ -163,7 +257,12 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     ):
         artifact_keys["mineru_md_key"] = mineru_md_key
 
-    result = process_mineru_result(doc_id=doc_id, version_id=version_id, mineru_result=mineru_result)
+    result = process_mineru_result(
+        doc_id=doc_id,
+        version_id=version_id,
+        mineru_result=mineru_result,
+        vl_table_repairs_by_table_id=table_vl_repairs,
+    )
 
     ie_engine = str(runtime_config.get("ie_engine") or "").strip().lower()
     if not ie_engine:
@@ -200,7 +299,7 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
         chunk_for_payload = {
             **chunk,
             "doc_name": object_key.split("/")[-1],
-            "doc_type": doc_type,
+            "doc_type": str(chunk.get("doc_type") or doc_type),
             "text": chunk.get("text", ""),
         }
         # Determine page_type per-chunk based on the chunk's start page
@@ -211,6 +310,8 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
             page_type = "device_inventory_table"
         elif page_start in _qual_pages:
             page_type = "qualification_table"
+        elif str(chunk.get("source_type") or "").strip() in {"table_row", "cross_page_table_row", "table_raw", "table_summary"}:
+            page_type = "table"
         else:
             page_type = "other"
         payload = build_payload(
@@ -240,6 +341,33 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
             "device_inventory_table": len((result.get("table_struct") or {}).get("device_inventory_table", [])),
             "qualification_table": len((result.get("table_struct") or {}).get("qualification_table", [])),
         },
+        "table_repair_counts": {
+            "none": sum(
+                1
+                for tables in (result.get("table_struct") or {}).values()
+                for t in (tables or [])
+                if str((t or {}).get("repair_strategy") or "") == "none"
+            ),
+            "stub": sum(
+                1
+                for tables in (result.get("table_struct") or {}).values()
+                for t in (tables or [])
+                if str((t or {}).get("repair_strategy") or "") == "stub"
+            ),
+            "vl_fallback": sum(
+                1
+                for tables in (result.get("table_struct") or {}).values()
+                for t in (tables or [])
+                if str((t or {}).get("repair_strategy") or "") == "vl_fallback"
+            ),
+        },
+        "table_vl_attempted": int(table_vl_stats.get("attempted") or 0),
+        "table_vl_applied": sum(
+            1
+            for tables in (result.get("table_struct") or {}).values()
+            for t in (tables or [])
+            if str((t or {}).get("repair_strategy") or "") == "vl_fallback"
+        ),
         "intermediate_counts": {
             "blocks": len(result.get("normalized_blocks", [])),
             "tables": len(result.get("normalized_tables", [])),

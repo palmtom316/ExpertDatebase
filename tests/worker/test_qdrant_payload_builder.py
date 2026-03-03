@@ -80,6 +80,7 @@ class TestPayloadBuilder(unittest.TestCase):
             "text": "试验电压应符合规定。",
             "clause_id": "3.2.1",
             "source_type": "table_row",
+            "table_repr": "row",
             "table_id": "t_12_1",
             "row_index": 2,
             "block_ids": ["b_12_1"],
@@ -88,6 +89,7 @@ class TestPayloadBuilder(unittest.TestCase):
         self.assertEqual(payload["clause_id"], "3.2.1")
         self.assertEqual(payload["clause_no"], "3.2.1")
         self.assertEqual(payload["source_type"], "table_row")
+        self.assertEqual(payload["table_repr"], "row")
         self.assertEqual(payload["table_id"], "t_12_1")
         self.assertEqual(payload["row_index"], 2)
 
