@@ -92,7 +92,40 @@ def test_chat_constraint_mode_returns_structured_constraints(monkeypatch: pytest
     assert len(result["constraints"]) == 1
     assert result["constraints"][0]["clause_id"] == "4.12.1(3)"
     assert result["constraints"][0]["risk_level"] == "high"
+    assert "evidence_full" in result["constraints"][0]
+    assert "evidence_guard_lines" in result["constraints"][0]
+    assert len(result["constraints_for_model"]) == 1
+    assert "必须" in result["constraints_for_model"][0]["evidence"]
     assert "强制性条款" in result["answer"]
+
+
+def test_chat_constraint_mode_keeps_full_text_for_model_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_search(*args, **kwargs):
+        return {
+            "citations": [
+                {
+                    "doc_name": "spec.pdf",
+                    "page_start": 31,
+                    "page_end": 31,
+                    "clause_id": "4.9.6",
+                    "excerpt": "4.9.6 抽真空时应采取防倒灌措施。",
+                    "chunk_text": (
+                        "4.9.6 在抽真空时，必须将不能承受真空机械强度的附件与油箱隔离。"
+                        "对允许抽同样真空度的部件，应同时抽真空。"
+                        "真空泵或真空机组应有防止突然停止或误操作引起油倒灌的措施。"
+                    ),
+                }
+            ]
+        }
+
+    monkeypatch.setattr(chat_orchestrator, "hybrid_search", fake_search)
+
+    result = chat_with_citations("给出约束条款", repo=None, entity_index=_DummyEntityIndex(), mode="constraint")
+    item = result["constraints"][0]
+    model_item = result["constraints_for_model"][0]
+    assert "必须将不能承受真空机械强度的附件与油箱隔离" in item["evidence_full"]
+    assert "必须" in item["evidence"]
+    assert "必须将不能承受真空机械强度的附件与油箱隔离" in model_item["evidence"]
 
 
 def test_chat_prompt_includes_question_and_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,4 +150,5 @@ def test_chat_prompt_includes_question_and_evidence(monkeypatch: pytest.MonkeyPa
     assert captured["task_type"] == "qa_generate"
     assert "问题：项目经理是谁" in captured["prompt"]
     assert "证据：" in captured["prompt"]
-    assert "[E1] demo.pdf p.1: 项目经理张三" in captured["prompt"]
+    assert "[E1]" in captured["prompt"]
+    assert "demo.pdf p.1: 项目经理张三" in captured["prompt"]

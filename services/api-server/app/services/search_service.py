@@ -659,28 +659,96 @@ def _payload_search_text(payload: dict[str, Any]) -> str:
     ).lower()
 
 
-def _extract_query_terms(query: str) -> list[str]:
+_CN_STOP_TERMS = {
+    "哪些",
+    "哪些规定",
+    "有哪些",
+    "有什么",
+    "规定",
+    "要求",
+    "相关",
+    "有关",
+    "请问",
+    "一下",
+    "一下子",
+    "说明",
+    "什么",
+    "怎么",
+    "如何",
+    "应当",
+    "应该",
+    "是否",
+}
+_CN_STOP_CHARS = set("的了吗呢吧啊呀和及并且或与在对将把为于被就都与其")
+
+
+def _clean_query_for_terms(query: str) -> str:
     q = str(query or "").lower()
+    q = re.sub(r"(?<!\d)\d{1,2}(?:\.\d+){1,4}(?:\([0-9A-Za-z]+\))?(?!\d)", " ", q)
+    q = re.sub(r"(回复|回答|查询到|没查询到|没有查询到|为什么|还是|但是|却)", " ", q)
+    q = re.sub(r"(有哪些规定|有哪(?:些)?规定|有哪些|有哪|哪些|规定|要求|什么|如何|怎么|请问)", " ", q)
+    return re.sub(r"\s+", "", q)
+
+
+def _split_cn_run(run: str) -> list[str]:
+    parts: list[str] = []
+    buf: list[str] = []
+    for ch in run:
+        if ch in _CN_STOP_CHARS:
+            if len(buf) >= 2:
+                parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    if len(buf) >= 2:
+        parts.append("".join(buf))
+    return parts
+
+
+def _valid_cn_term(term: str) -> bool:
+    t = str(term or "").strip()
+    if len(t) < 2:
+        return False
+    if t in _CN_STOP_TERMS:
+        return False
+    if re.search(r"(哪些|有哪|规定|要求|什么|如何|怎么|请问)", t):
+        return False
+    if len(t) <= 3 and re.search(r"[有哪些]", t):
+        return False
+    if all(ch in _CN_STOP_CHARS for ch in t):
+        return False
+    return True
+
+
+def _extract_query_terms(query: str) -> list[str]:
+    q = _clean_query_for_terms(query)
     terms: list[str] = []
     terms.extend(re.findall(r"\d+(?:\.\d+)+", q))
     terms.extend(re.findall(r"[a-z0-9]{2,}", q))
-    cn_runs = re.findall(r"[\u4e00-\u9fff]{2,24}", q)
-    terms.extend(cn_runs)
+    cn_runs = re.findall(r"[\u4e00-\u9fff]{2,36}", q)
     for run in cn_runs:
-        # Add short Chinese n-grams so natural queries (without clause id)
-        # can still match by core words such as “绝缘油/验收/保管”.
-        run_len = len(run)
-        for n in (2, 3, 4):
-            if run_len < n:
-                continue
-            for i in range(0, run_len - n + 1):
-                terms.append(run[i : i + n])
+        segments = _split_cn_run(run)
+        if not segments:
+            segments = [run]
+        for seg in segments:
+            seg_len = len(seg)
+            if seg_len <= 8 and _valid_cn_term(seg):
+                terms.append(seg)
+            for n in (2, 3, 4):
+                if seg_len < n:
+                    continue
+                for i in range(0, seg_len - n + 1):
+                    gram = seg[i : i + n]
+                    if _valid_cn_term(gram):
+                        terms.append(gram)
     # Deduplicate while preserving order.
     out: list[str] = []
     seen: set[str] = set()
     for t in terms:
         x = t.strip()
         if not x or x in seen:
+            continue
+        if re.fullmatch(r"[\u4e00-\u9fff]+", x) and not _valid_cn_term(x):
             continue
         seen.add(x)
         out.append(x)
@@ -709,6 +777,7 @@ def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[
 
     question_norm = re.sub(r"\s+", "", str(question or "").lower())
     table_query = _is_table_query(question)
+    listing_query = _is_listing_query(question)
     scored: list[tuple[float, dict[str, Any]]] = []
 
     for idx, hit in enumerate(hits):
@@ -736,6 +805,9 @@ def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[
             exact += 3.0
         if route == "structured":
             exact += 1.5
+        if listing_query and source_type == "section_summary":
+            # Listing-style questions should prioritize concrete clause body.
+            exact -= 1.2
 
         base = float((hit or {}).get("score") or 0.0)
         final_score = lexical * 5.0 + exact + base * 0.05 - idx * 1e-4
@@ -1281,6 +1353,8 @@ def hybrid_search(
     table_sparse_filter = _merge_filters(filter_json, _table_query_extra_filter(table_sparse_enabled))
     vector_top_k = max(top_k, int(os.getenv("HYBRID_VECTOR_TOP_K", "24")))
     keyword_top_k = max(4, int(os.getenv("HYBRID_KEYWORD_TOP_K", "8")))
+    if _is_listing_query(question):
+        keyword_top_k = max(keyword_top_k, int(os.getenv("HYBRID_KEYWORD_TOP_K_LISTING", "48")))
     fused_limit = max(top_k * 2, int(os.getenv("HYBRID_FUSED_TOP_K", "40")))
     sparse_top_k = max(top_k, int(os.getenv("HYBRID_SPARSE_TOP_K", "24")))
     structured_top_k = max(top_k, int(os.getenv("HYBRID_STRUCTURED_TOP_K", "24")))

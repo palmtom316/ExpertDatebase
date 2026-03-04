@@ -17,6 +17,8 @@ services:
       - QDRANT_COLLECTION=chunks_v1
       - QDRANT_VECTOR_NAME=text_embedding
       - ENABLE_QDRANT_SCROLL_KEYWORD=${ENABLE_QDRANT_SCROLL_KEYWORD:-1}
+      - ENABLE_SIRCHMUNK=${ENABLE_SIRCHMUNK:-1}
+      - SIRCHMUNK_BASE_URL=${SIRCHMUNK_BASE_URL:-http://sirchmunk:8091}
       - DOC_REGISTRY_BACKEND=auto
       - TASK_QUEUE_BACKEND=auto
       - SEARCH_REPO_BACKEND=auto
@@ -95,6 +97,7 @@ services:
     volumes:
       - ../shared/configs:/configs:ro
       - objectdata:/data/objects
+      - sparse_docs:/data/docs
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,6 +112,21 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  sirchmunk:
+    image: expertkb/api-server:dev
+    command: ["python", "/app/services/sirchmunk/server.py"]
+    environment:
+      - SPARSE_SIDECAR_DOCS_ROOT=/data/docs
+      - SIRCHMUNK_PORT=8091
+    volumes:
+      - ../services/sirchmunk:/app/services/sirchmunk:ro
+      - sparse_docs:/data/docs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/health', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
 
   scheduler:
     build:
@@ -188,4 +206,5 @@ volumes:
   pgdata:
   qdrantdata:
   objectdata:
+  sparse_docs:
   miniodata:
