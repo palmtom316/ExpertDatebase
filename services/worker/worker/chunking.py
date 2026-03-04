@@ -9,6 +9,7 @@ _CLAUSE_PAT = re.compile(r"(?<!\d)(\d{1,2}(?:\.\d+){1,4}(?:\([0-9A-Za-z]+\))?)(?
 _TOP_CLAUSE_START_PAT = re.compile(r"^\s*(\d{1,2}(?:\.\d+){1,4}(?:\([0-9A-Za-z]+\))?)(?=\s|$|[:：])")
 _SUBCLAUSE_START_PAT = re.compile(r"^\s*[\(（]([0-9]{1,2})[\)）](?=\s|$|[:：])")
 _ITEM_START_PAT = re.compile(r"^\s*([0-9]{1,2})[)）](?=\s|$|[:：])")
+_ITEM_SPACE_START_PAT = re.compile(r"^\s*([0-9]{1,2})(?=\s|$|[:：])")
 
 
 def _extract_clause_id(text: str) -> str | None:
@@ -69,11 +70,22 @@ def _segment_node_meta(line: str, root_clause: str | None, sub_clause: str | Non
         node = f"{parent}.{item_m.group(1)}"
         return parent, node, sub_clause, True
 
-    fallback = _extract_clause_id(line)
-    if fallback:
-        root = _strip_clause_sub(fallback)
-        sub = fallback if fallback != root else None
-        return fallback, fallback, sub, True
+    # OCR/markdown lines often use "2 xxx" instead of "2) xxx" for list items.
+    # Keep these lines under the current clause context.
+    item_space_m = _ITEM_SPACE_START_PAT.match(line)
+    if item_space_m and (sub_clause or root_clause):
+        parent = sub_clause or root_clause
+        node = f"{parent}.{item_space_m.group(1)}"
+        return parent, node, sub_clause, True
+
+    # Only use global clause-id fallback when no active clause context exists.
+    # This avoids mislabeling lines like "2 ... 第2.1.1.4款 ..." as clause 2.1.1.4.
+    if not (sub_clause or root_clause):
+        fallback = _extract_clause_id(line)
+        if fallback:
+            root = _strip_clause_sub(fallback)
+            sub = fallback if fallback != root else None
+            return fallback, fallback, sub, True
 
     return sub_clause or root_clause, sub_clause or root_clause, sub_clause, False
 
@@ -169,6 +181,10 @@ def _chapter_segments(chapter: dict[str, Any], max_chars: int, overlap_chars: in
     block_rows = chapter.get("blocks")
     if isinstance(block_rows, list) and block_rows:
         segments: list[dict[str, Any]] = []
+        carry_clause_id: str | None = None
+        carry_clause_node_id: str | None = None
+        carry_clause_parent_id: str | None = None
+        carry_clause_level: int | None = None
         for row in block_rows:
             if not isinstance(row, dict):
                 continue
@@ -183,6 +199,43 @@ def _chapter_segments(chapter: dict[str, Any], max_chars: int, overlap_chars: in
                 clause_node_id = str(clause_part.get("clause_node_id") or clause_id or "").strip() or None
                 clause_parent_id = str(clause_part.get("clause_parent_id") or "").strip()
                 clause_level = int(clause_part.get("clause_level") or 0)
+
+                # Continuation lines like "2 xxx" may contain inline references
+                # (e.g., "第2.1.1.4款"), which should not override current clause context.
+                if (
+                    carry_clause_id is not None
+                    and clause_id is not None
+                    and clause_id != carry_clause_id
+                    and not (
+                        clause_id.startswith(f"{carry_clause_id}.")
+                        or clause_id.startswith(f"{carry_clause_id}(")
+                    )
+                    and not _TOP_CLAUSE_START_PAT.match(segment_text)
+                    and (
+                        _ITEM_START_PAT.match(segment_text)
+                        or _ITEM_SPACE_START_PAT.match(segment_text)
+                        or _SUBCLAUSE_START_PAT.match(segment_text)
+                    )
+                ):
+                    clause_id = carry_clause_id
+                    clause_node_id = carry_clause_node_id or carry_clause_id
+                    clause_parent_id = carry_clause_parent_id or ""
+                    clause_level = int(carry_clause_level or 0)
+
+                # OCR often splits numbered items into a new block without clause id.
+                # Keep these fragments under the previous clause context in the same chapter.
+                if clause_id is None and carry_clause_id is not None:
+                    clause_id = carry_clause_id
+                    clause_node_id = carry_clause_node_id or carry_clause_id
+                    clause_parent_id = carry_clause_parent_id or ""
+                    clause_level = int(carry_clause_level or 0)
+
+                if clause_id is not None:
+                    carry_clause_id = clause_id
+                    carry_clause_node_id = clause_node_id
+                    carry_clause_parent_id = clause_parent_id
+                    carry_clause_level = clause_level
+
                 for part in _split_text(segment_text, max_chars=max_chars, overlap_chars=overlap_chars):
                     segments.append(
                         {

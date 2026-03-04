@@ -161,3 +161,43 @@ def test_chunking_builds_hierarchical_clause_nodes() -> None:
     assert str(item_chunk.get("clause_id") or "") == "3.0.6(3)"
     assert str(item_chunk.get("clause_parent_id") or "") == "3.0.6(3)"
     assert int(item_chunk.get("clause_level") or 0) >= 5
+
+
+def test_chunking_carries_clause_context_across_blocks_for_numbered_items() -> None:
+    chapters = [
+        {
+            "chapter_id": "ch_4",
+            "start_page": 19,
+            "end_page": 19,
+            "blocks": [
+                {
+                    "block_id": "b_19_1",
+                    "page_no": 19,
+                    "text": "4.3.1 绝缘油的验收与保管应符合下列规定：\n1 绝缘油应储藏在密封清洁的专用容器内。\n2 每批到达现场的绝缘油均应有试验记录：\n1) 大罐油应每罐取样。",
+                },
+                {
+                    "block_id": "b_19_2",
+                    "page_no": 19,
+                    "text": "2) 取样试验应按现行国家标准GB7597执行。",
+                },
+                {
+                    "block_id": "b_19_3",
+                    "page_no": 19,
+                    "text": "3 不同牌号的绝缘油应分别储存。\n4 放油时应目测。\n5 到达现场首次抽取，宜先用压力式滤油机粗过滤。",
+                },
+            ],
+            "text": "unused",
+        }
+    ]
+    chunks = chunk_chapters(
+        doc_id="doc_1",
+        version_id="ver_1",
+        chapters=chapters,
+        min_chars=1,
+        max_chars=500,
+        overlap_chars=0,
+    )
+    assert chunks
+    assert any("2) 取样试验应按现行国家标准GB7597执行。" in str(c.get("text") or "") for c in chunks)
+    assert any("3 不同牌号的绝缘油应分别储存。" in str(c.get("text") or "") for c in chunks)
+    assert all(str(c.get("clause_id") or "") == "4.3.1" for c in chunks)

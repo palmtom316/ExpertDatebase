@@ -8,6 +8,11 @@ from typing import Any, Protocol
 from sqlalchemy import create_engine, text
 
 
+def _sanitize_text(value: Any) -> str:
+    s = str(value or "")
+    return "".join(ch for ch in s if ch in ("\n", "\t") or ord(ch) >= 32).strip()
+
+
 class DocPagesRepo(Protocol):
     def upsert_pages(self, doc_id: str, version_id: str, pages: list[dict[str, Any]]) -> int:
         raise NotImplementedError
@@ -75,7 +80,7 @@ class SQLDocPagesRepo:
         rows: list[dict[str, Any]] = []
         for page in pages:
             page_no = int(page.get("page_no") or 0)
-            text_value = str(page.get("text") or "").strip()
+            text_value = _sanitize_text(page.get("text") or "")
             if page_no <= 0 or not text_value:
                 continue
             rows.append(
@@ -84,7 +89,7 @@ class SQLDocPagesRepo:
                     "version_id": version_id,
                     "page_no": page_no,
                     "text": text_value,
-                    "source_path": str(page.get("source_path") or "").strip() or None,
+                    "source_path": _sanitize_text(page.get("source_path") or "") or None,
                 }
             )
         if not rows:
@@ -113,4 +118,3 @@ def build_doc_pages_repo_from_env() -> DocPagesRepo:
     if not database_url:
         return NoopDocPagesRepo()
     return SQLDocPagesRepo(database_url=database_url)
-

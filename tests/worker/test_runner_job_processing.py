@@ -42,9 +42,13 @@ class FakeRegistry:
 class FakeQdrant:
     def __init__(self):
         self.items = []
+        self.deleted_versions = []
 
     def upsert(self, point_id, vector, payload):
         self.items.append({"id": point_id, "vector": vector, "payload": payload})
+
+    def delete_by_version(self, version_id):
+        self.deleted_versions.append(version_id)
 
 
 def test_process_document_job_updates_status_and_upserts_chunks() -> None:
@@ -63,6 +67,7 @@ def test_process_document_job_updates_status_and_upserts_chunks() -> None:
     assert rt.doc_registry.calls[0][1] == "processing"
     assert rt.doc_registry.calls[-1][1] == "processed"
     assert len(rt.qdrant_repo.items) >= 1
+    assert rt.qdrant_repo.deleted_versions == ["ver_1"]
     first = rt.qdrant_repo.items[0]
     assert str(first["id"]).startswith("doc_1:ver_1:")
     assert first["payload"]["version_id"] == "ver_1"

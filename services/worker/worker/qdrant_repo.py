@@ -17,6 +17,9 @@ class QdrantRepo(Protocol):
     def search(self, query_vector: list[float], filter_json: dict[str, Any] | None, limit: int = 5) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def delete_by_version(self, version_id: str) -> None:
+        raise NotImplementedError
+
 
 class InMemoryQdrantRepo:
     def __init__(self) -> None:
@@ -29,6 +32,12 @@ class InMemoryQdrantRepo:
     def search(self, query_vector: list[float], filter_json: dict[str, Any] | None, limit: int = 5) -> list[dict[str, Any]]:
         results = [r for r in self._records if _match_filter(r["payload"], filter_json)]
         return results[:limit]
+
+    def delete_by_version(self, version_id: str) -> None:
+        target = str(version_id or "").strip()
+        if not target:
+            return
+        self._records = [r for r in self._records if str((r.get("payload") or {}).get("version_id") or "") != target]
 
 
 class QdrantHttpRepo:
@@ -169,6 +178,27 @@ class QdrantHttpRepo:
             {"id": item.get("id"), "score": item.get("score"), "payload": item.get("payload", {})}
             for item in result
         ]
+
+    def delete_by_version(self, version_id: str) -> None:
+        target = str(version_id or "").strip()
+        if not target:
+            return
+        body = {
+            "filter": {
+                "must": [
+                    {
+                        "key": "version_id",
+                        "match": {"value": target},
+                    }
+                ]
+            }
+        }
+        resp = requests.post(
+            self._url(f"/collections/{self.collection}/points/delete?wait=true"),
+            json=body,
+            timeout=self.timeout_s,
+        )
+        resp.raise_for_status()
 
 
 def create_qdrant_repo_from_env() -> QdrantRepo:

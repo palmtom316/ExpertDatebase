@@ -53,6 +53,11 @@ def _put_artifact_bytes(storage: Any, key: str, payload: bytes, content_type: st
         return False
 
 
+def _sanitize_text(value: Any) -> str:
+    s = str(value or "")
+    return "".join(ch for ch in s if ch in ("\n", "\t") or ord(ch) >= 32).strip()
+
+
 def _mineru_pages_to_markdown(mineru_result: dict[str, Any]) -> str:
     pages = mineru_result.get("pages") if isinstance(mineru_result, dict) else []
     if not isinstance(pages, list):
@@ -68,7 +73,7 @@ def _mineru_pages_to_markdown(mineru_result: dict[str, Any]) -> str:
             for block in blocks:
                 if not isinstance(block, dict):
                     continue
-                text = str(block.get("text") or "").strip()
+                text = _sanitize_text(block.get("text") or "")
                 if not text:
                     continue
                 block_type = str(block.get("type") or "").strip().lower()
@@ -81,7 +86,7 @@ def _mineru_pages_to_markdown(mineru_result: dict[str, Any]) -> str:
             for table in tables:
                 if not isinstance(table, dict):
                     continue
-                raw_text = str(table.get("raw_text") or "").strip()
+                raw_text = _sanitize_text(table.get("raw_text") or "")
                 if raw_text:
                     out.append(f"> 表格: {raw_text}")
     return "\n\n".join(out).strip()
@@ -105,14 +110,14 @@ def _page_rows_from_mineru(mineru_result: dict[str, Any], doc_id: str) -> list[d
             for block in blocks:
                 if not isinstance(block, dict):
                     continue
-                text = str(block.get("text") or "").strip()
+                text = _sanitize_text(block.get("text") or "")
                 if text:
                     lines.append(text)
         if isinstance(tables, list):
             for table in tables:
                 if not isinstance(table, dict):
                     continue
-                text = str(table.get("raw_text") or "").strip()
+                text = _sanitize_text(table.get("raw_text") or "")
                 if text:
                     lines.append(text)
         page_text = "\n".join(lines).strip()
@@ -440,12 +445,16 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     index_chunks = list(result.get("chunks") or [])
     index_chunks.extend(structured_fact_chunks)
 
+    delete_by_version = getattr(rt.qdrant_repo, "delete_by_version", None)
+    if callable(delete_by_version):
+        delete_by_version(version_id=version_id)
+
     for chunk in index_chunks:
         chunk_for_payload = {
             **chunk,
             "doc_name": object_key.split("/")[-1],
             "doc_type": str(chunk.get("doc_type") or doc_type),
-            "text": chunk.get("text", ""),
+            "text": _sanitize_text(chunk.get("text", "")),
         }
         # Determine page_type per-chunk based on the chunk's start page
         page_start = int(chunk.get("page_start") or 0)

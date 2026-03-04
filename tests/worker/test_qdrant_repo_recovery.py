@@ -23,6 +23,7 @@ class _Resp:
 
 
 def test_worker_qdrant_upsert_recovers_from_vector_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QDRANT_ALLOW_RECREATE_ON_DIM_MISMATCH", "1")
     calls = {"put": [], "delete": []}
 
     def fake_put(url: str, json: dict, timeout: float):
