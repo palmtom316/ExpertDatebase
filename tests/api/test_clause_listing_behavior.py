@@ -35,6 +35,12 @@ def test_extract_query_terms_reduces_cn_noise_for_listing_query() -> None:
     assert "些规" not in terms
 
 
+def test_extract_listing_focus_terms_keeps_subject_keyword() -> None:
+    focus = chat_orchestrator._extract_listing_focus_terms("变压器安装有哪些规定")  # type: ignore[attr-defined]
+    assert "变压器" in focus
+    assert "安装" not in focus
+
+
 def test_pick_target_clauses_prefers_install_roots(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHAT_CLAUSE_TEMPLATE_LISTING_FAMILIES", "3")
     citations = [
@@ -76,8 +82,212 @@ def test_pick_target_clauses_prefers_install_roots(monkeypatch: pytest.MonkeyPat
     assert family_mode is True
     assert "4.6" in targets
     assert "4.8" in targets
-    assert targets.index("4.6") < targets.index("4.9")
-    assert targets.index("4.8") < targets.index("4.9")
+    assert "4.9" not in targets
+
+
+def test_pick_target_clauses_prefers_focus_root_for_transformer_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHAT_CLAUSE_TEMPLATE_LISTING_FAMILIES", "3")
+    citations = [
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 59,
+            "page_end": 59,
+            "excerpt": "11.2 电容器的安装。",
+            "chunk_text": "11.2 电容器的安装。",
+            "source_type": "text",
+            "clause_id": "11.2",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 15,
+            "page_end": 16,
+            "excerpt": "3.0.7 与高压电器安装有关的建筑工程施工应符合下列规定。",
+            "chunk_text": "3.0.7 与高压电器安装有关的建筑工程施工应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "3.0.7",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 16,
+            "page_end": 16,
+            "excerpt": "3.0.9 ... 应符合《变压器、高压电器和套管的接线端子》GB5273。",
+            "chunk_text": "3.0.9 ... 应符合《变压器、高压电器和套管的接线端子》GB5273。",
+            "source_type": "text",
+            "clause_id": "3.0.9",
+        },
+    ]
+    targets, family_mode = chat_orchestrator._pick_target_clauses(  # type: ignore[attr-defined]
+        question="变压器安装有哪些规定",
+        citations=citations,
+    )
+    assert family_mode is True
+    assert targets
+    assert targets[0] == "3.0"
+
+
+def test_pick_target_clauses_skips_preface_like_roots_for_install_listing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHAT_CLAUSE_TEMPLATE_LISTING_FAMILIES", "3")
+    citations = [
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 38,
+            "page_end": 38,
+            "excerpt": "A.0.2 充气运输的变压器及电抗器应符合下列规定。",
+            "chunk_text": "A.0.2 充气运输的变压器及电抗器应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "0.2",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 3,
+            "page_end": 3,
+            "excerpt": "统一书号 494 定价：13.00元。",
+            "chunk_text": "统一书号 494 定价：13.00元。",
+            "source_type": "text",
+            "clause_id": "13.00",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 13,
+            "page_end": 14,
+            "excerpt": "3.0.6 与安装有关的建筑工程施工应符合下列规定。",
+            "chunk_text": "3.0.6 与安装有关的建筑工程施工应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "3.0.6",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 27,
+            "page_end": 27,
+            "excerpt": "4.8.4 冷却装置的安装应符合下列规定。",
+            "chunk_text": "4.8.4 冷却装置的安装应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "4.8.4",
+        },
+    ]
+    targets, family_mode = chat_orchestrator._pick_target_clauses(  # type: ignore[attr-defined]
+        question="变压器安装有哪些规定",
+        citations=citations,
+    )
+    assert family_mode is True
+    assert "3.0" in targets
+    assert "4.8" in targets
+    assert "0.2" not in targets
+    assert "13.00" not in targets
+
+
+def test_pick_target_clauses_transformer_install_limits_noise_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHAT_CLAUSE_TEMPLATE_LISTING_FAMILIES", "3")
+    citations = [
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 13,
+            "page_end": 14,
+            "excerpt": "3.0.6 与变压器安装有关的建筑工程施工应符合下列规定。",
+            "chunk_text": "3.0.6 与变压器安装有关的建筑工程施工应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "3.0.6",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 16,
+            "page_end": 16,
+            "excerpt": "4.1.9 本体就位应符合下列规定。",
+            "chunk_text": "4.1.9 本体就位应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "4.1.9",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 32,
+            "page_end": 32,
+            "excerpt": "4.11.3 对变压器进行密封性试验。",
+            "chunk_text": "4.11.3 对变压器进行密封性试验。",
+            "source_type": "text",
+            "clause_id": "4.11.3",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 27,
+            "page_end": 27,
+            "excerpt": "4.8.4 冷却装置的安装应符合下列规定。",
+            "chunk_text": "4.8.4 冷却装置的安装应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "4.8.4",
+        },
+    ]
+    targets, family_mode = chat_orchestrator._pick_target_clauses(  # type: ignore[attr-defined]
+        question="变压器安装有哪些规定",
+        citations=citations,
+    )
+    assert family_mode is True
+    assert "3.0" in targets
+    assert "4.8" in targets
+    assert "4.11" not in targets
+
+
+def test_select_template_output_citations_filters_listing_noise() -> None:
+    citations = [
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 3,
+            "page_end": 3,
+            "excerpt": "统一书号 494 定价：13.00元。",
+            "chunk_text": "统一书号 494 定价：13.00元。",
+            "source_type": "text",
+            "clause_id": "13.00",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 38,
+            "page_end": 38,
+            "excerpt": "A.0.2 充气运输的变压器及电抗器应符合下列规定。",
+            "chunk_text": "A.0.2 充气运输的变压器及电抗器应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "0.2",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 13,
+            "page_end": 14,
+            "excerpt": "3.0.6 与安装有关的建筑工程施工应符合下列规定。",
+            "chunk_text": "3.0.6 与安装有关的建筑工程施工应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "3.0.6",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 27,
+            "page_end": 27,
+            "excerpt": "4.8.4 冷却装置的安装应符合下列规定。",
+            "chunk_text": "4.8.4 冷却装置的安装应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "4.8.4",
+        },
+    ]
+    out = chat_orchestrator._select_template_output_citations(  # type: ignore[attr-defined]
+        question="变压器安装有哪些规定",
+        citations=citations,
+    )
+    out_clause_ids = [str(x.get("clause_id") or "") for x in out]
+    assert "3.0.6" in out_clause_ids
+    assert "4.8.4" in out_clause_ids
+    assert "13.00" not in out_clause_ids
 
 
 def test_chat_listing_query_keeps_multiple_clause_families(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,6 +401,358 @@ def test_chat_listing_query_uses_listing_top_k(monkeypatch: pytest.MonkeyPatch) 
         entity_index=_DummyEntityIndex(),
     )
     assert observed["top_k"] == 48
+
+
+def test_attach_clause_family_siblings_expands_family_by_keyword_when_listing() -> None:
+    class _Repo:
+        def fetch_by_filter(self, filter_json=None, limit=20):  # noqa: ARG002
+            return []
+
+        def keyword_search(self, query_text, filter_json=None, limit=20):  # noqa: ARG002
+            if query_text != "3.0":
+                return []
+            return [
+                {
+                    "id": "ck_306",
+                    "score": 1.0,
+                    "payload": {
+                        "doc_name": "spec.pdf",
+                        "doc_id": "doc_spec",
+                        "page_start": 15,
+                        "page_end": 15,
+                        "source_type": "text",
+                        "chunk_text": "3.0.6 设备基础应符合安装要求。",
+                        "excerpt": "3.0.6 设备基础应符合安装要求。",
+                        "clause_id": "3.0.6",
+                    },
+                },
+                {
+                    "id": "ck_307",
+                    "score": 0.9,
+                    "payload": {
+                        "doc_name": "spec.pdf",
+                        "doc_id": "doc_spec",
+                        "page_start": 15,
+                        "page_end": 16,
+                        "source_type": "text",
+                        "chunk_text": "3.0.7 与安装有关的建筑工程施工应符合规定。",
+                        "excerpt": "3.0.7 与安装有关的建筑工程施工应符合规定。",
+                        "clause_id": "3.0.7",
+                    },
+                },
+            ]
+
+    citations = [
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 15,
+            "page_end": 16,
+            "excerpt": "3.0.7 与安装有关的建筑工程施工应符合规定。",
+            "chunk_text": "3.0.7 与安装有关的建筑工程施工应符合规定。",
+            "source_type": "text",
+            "clause_id": "3.0.7",
+        }
+    ]
+    out = chat_orchestrator._attach_clause_family_siblings(  # type: ignore[attr-defined]
+        question="变压器安装有哪些规定",
+        citations=citations,
+        repo=_Repo(),
+    )
+    clause_ids = [str(item.get("clause_id") or "") for item in out]
+    assert "3.0.6" in clause_ids
+    assert "3.0.7" in clause_ids
+
+
+def test_attach_clause_family_siblings_merges_section_hits_when_keyword_partial() -> None:
+    class _Repo:
+        def fetch_by_filter(self, filter_json=None, limit=20):  # noqa: ARG002
+            must = (filter_json or {}).get("must") or []
+            has_section = any(
+                isinstance(item, dict)
+                and item.get("key") == "section_no"
+                and isinstance(item.get("match"), dict)
+                and item["match"].get("value") == "3.0"
+                for item in must
+            )
+            if not has_section:
+                return []
+            return [
+                {
+                    "id": "ck_306",
+                    "score": 1.0,
+                    "payload": {
+                        "doc_name": "spec.pdf",
+                        "doc_id": "doc_spec",
+                        "page_start": 15,
+                        "page_end": 15,
+                        "source_type": "text",
+                        "chunk_text": "3.0.6 施工前应编制施工方案。",
+                        "excerpt": "3.0.6 施工前应编制施工方案。",
+                        "clause_id": "3.0.6",
+                    },
+                }
+            ]
+
+        def keyword_search(self, query_text, filter_json=None, limit=20):  # noqa: ARG002
+            if query_text != "3.0":
+                return []
+            return [
+                {
+                    "id": "ck_307",
+                    "score": 1.0,
+                    "payload": {
+                        "doc_name": "spec.pdf",
+                        "doc_id": "doc_spec",
+                        "page_start": 15,
+                        "page_end": 16,
+                        "source_type": "text",
+                        "chunk_text": "3.0.7 与安装有关的建筑工程施工应符合规定。",
+                        "excerpt": "3.0.7 与安装有关的建筑工程施工应符合规定。",
+                        "clause_id": "3.0.7",
+                    },
+                }
+            ]
+
+    citations = [
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 15,
+            "page_end": 16,
+            "excerpt": "3.0.7 与安装有关的建筑工程施工应符合规定。",
+            "chunk_text": "3.0.7 与安装有关的建筑工程施工应符合规定。",
+            "source_type": "text",
+            "clause_id": "3.0.7",
+        }
+    ]
+    out = chat_orchestrator._attach_clause_family_siblings(  # type: ignore[attr-defined]
+        question="变压器安装有哪些规定",
+        citations=citations,
+        repo=_Repo(),
+    )
+    clause_ids = [str(item.get("clause_id") or "") for item in out]
+    assert "3.0.6" in clause_ids
+    assert "3.0.7" in clause_ids
+
+
+def test_attach_clause_family_siblings_backfills_required_transformer_clauses() -> None:
+    class _Repo:
+        def fetch_by_filter(self, filter_json=None, limit=20):  # noqa: ARG002
+            must = (filter_json or {}).get("must") or []
+            clause_any = next(
+                (
+                    item.get("match", {}).get("any")
+                    for item in must
+                    if isinstance(item, dict)
+                    and item.get("key") == "clause_id"
+                    and isinstance(item.get("match"), dict)
+                    and item.get("match", {}).get("any")
+                ),
+                None,
+            )
+            if clause_any and "3.0.7" in clause_any:
+                return [
+                    {
+                        "id": "ck_307",
+                        "score": 1.0,
+                        "payload": {
+                            "doc_name": "spec.pdf",
+                            "doc_id": "doc_spec",
+                            "page_start": 14,
+                            "page_end": 14,
+                            "source_type": "text",
+                            "chunk_text": "3.0.7 设备安装用紧固件应符合规定。",
+                            "excerpt": "3.0.7 设备安装用紧固件应符合规定。",
+                            "clause_id": "3.0.7",
+                        },
+                    }
+                ]
+            return []
+
+        def keyword_search(self, query_text, filter_json=None, limit=20):  # noqa: ARG002
+            if query_text != "3.0":
+                return []
+            return [
+                {
+                    "id": "ck_306",
+                    "score": 1.0,
+                    "payload": {
+                        "doc_name": "spec.pdf",
+                        "doc_id": "doc_spec",
+                        "page_start": 13,
+                        "page_end": 14,
+                        "source_type": "text",
+                        "chunk_text": "3.0.6 与安装有关的建筑工程施工应符合下列规定。",
+                        "excerpt": "3.0.6 与安装有关的建筑工程施工应符合下列规定。",
+                        "clause_id": "3.0.6",
+                    },
+                }
+            ]
+
+    citations = [
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 13,
+            "page_end": 14,
+            "excerpt": "3.0.6 与安装有关的建筑工程施工应符合下列规定。",
+            "chunk_text": "3.0.6 与安装有关的建筑工程施工应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "3.0.6",
+        }
+    ]
+    out = chat_orchestrator._attach_clause_family_siblings(  # type: ignore[attr-defined]
+        question="变压器安装有哪些规定",
+        citations=citations,
+        repo=_Repo(),
+    )
+    clause_ids = [str(item.get("clause_id") or "") for item in out]
+    assert "3.0.6" in clause_ids
+    assert "3.0.7" in clause_ids
+
+
+def test_build_fixed_clause_answer_listing_keeps_previous_adjacent_clause() -> None:
+    citations = [
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 15,
+            "page_end": 16,
+            "excerpt": "3.0.7 与安装有关的建筑工程施工应符合下列规定。",
+            "chunk_text": "3.0.7 与安装有关的建筑工程施工应符合下列规定。",
+            "source_type": "text",
+            "clause_id": "3.0.7",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 16,
+            "page_end": 16,
+            "excerpt": "3.0.9 设备安装用紧固件应符合《变压器、高压电器和套管的接线端子》标准。",
+            "chunk_text": "3.0.9 设备安装用紧固件应符合《变压器、高压电器和套管的接线端子》标准。",
+            "source_type": "text",
+            "clause_id": "3.0.9",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 15,
+            "page_end": 15,
+            "excerpt": "3.0.1 高压电器安装应按设计执行。",
+            "chunk_text": "3.0.1 高压电器安装应按设计执行。",
+            "source_type": "text",
+            "clause_id": "3.0.1",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 16,
+            "page_end": 16,
+            "excerpt": "3.0.10 高压电器接地应符合标准。",
+            "chunk_text": "3.0.10 高压电器接地应符合标准。",
+            "source_type": "text",
+            "clause_id": "3.0.10",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 16,
+            "page_end": 16,
+            "excerpt": "3.0.11 安装验收应符合技术文件。",
+            "chunk_text": "3.0.11 安装验收应符合技术文件。",
+            "source_type": "text",
+            "clause_id": "3.0.11",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 16,
+            "page_end": 16,
+            "excerpt": "3.0.12 安装过程记录应完整。",
+            "chunk_text": "3.0.12 安装过程记录应完整。",
+            "source_type": "text",
+            "clause_id": "3.0.12",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 16,
+            "page_end": 16,
+            "excerpt": "3.0.13 安装完成后应进行交接。",
+            "chunk_text": "3.0.13 安装完成后应进行交接。",
+            "source_type": "text",
+            "clause_id": "3.0.13",
+        },
+        {
+            "doc_name": "spec.pdf",
+            "doc_id": "doc_spec",
+            "page_start": 15,
+            "page_end": 15,
+            "excerpt": "3.0.6 施工前应编制施工方案。",
+            "chunk_text": "3.0.6 施工前应编制施工方案。",
+            "source_type": "text",
+            "clause_id": "3.0.6",
+        },
+    ]
+
+    answer = chat_orchestrator._build_fixed_clause_answer(  # type: ignore[attr-defined]
+        question="变压器安装有哪些规定",
+        citations=citations,
+    )
+    assert answer is not None
+    assert "3.0.7" in answer
+    assert "3.0.6" in answer
+
+
+def test_chat_listing_query_prefers_focus_family_and_avoids_capacitor_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_search(*args, **kwargs):  # noqa: ARG001
+        return {
+            "citations": [
+                {
+                    "doc_name": "spec.pdf",
+                    "doc_id": "doc_spec",
+                    "page_start": 59,
+                    "page_end": 59,
+                    "excerpt": "11.2 电容器的安装应满足本章规定。",
+                    "chunk_text": "11.2 电容器的安装应满足本章规定。",
+                    "source_type": "text",
+                    "clause_id": "11.2",
+                },
+                {
+                    "doc_name": "spec.pdf",
+                    "doc_id": "doc_spec",
+                    "page_start": 61,
+                    "page_end": 61,
+                    "excerpt": "11.3 耦合电容器的安装应满足本章规定。",
+                    "chunk_text": "11.3 耦合电容器的安装应满足本章规定。",
+                    "source_type": "text",
+                    "clause_id": "11.3",
+                },
+                {
+                    "doc_name": "spec.pdf",
+                    "doc_id": "doc_spec",
+                    "page_start": 16,
+                    "page_end": 16,
+                    "excerpt": "3.0.9 设备安装用紧固件应符合《变压器、高压电器和套管的接线端子》GB5273。",
+                    "chunk_text": "3.0.9 设备安装用紧固件应符合《变压器、高压电器和套管的接线端子》GB5273。",
+                    "source_type": "text",
+                    "clause_id": "3.0.9",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(chat_orchestrator, "hybrid_search", fake_search)
+    result = chat_with_citations(
+        question="变压器的安装有哪些规定",
+        repo=None,
+        entity_index=_DummyEntityIndex(),
+    )
+    assert result["llm"]["model"] == "clause-template-v1"
+    assert "3.0.9" in result["answer"]
+    assert "电容器" not in result["answer"]
 
 
 def test_pick_best_evidence_text_removes_ocr_text_tokens() -> None:

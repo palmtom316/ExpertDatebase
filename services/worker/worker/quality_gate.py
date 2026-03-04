@@ -51,8 +51,14 @@ def _looks_noisy_chunk(text: str) -> bool:
     lower = s.lower()
     if "%pdf-" in lower or "obj<</filter/flatedecode" in lower or "endstream" in lower:
         return True
-    if "\\mathrm" in s and len(s) > 60:
-        return True
+    latex_cmds = re.findall(r"\\[A-Za-z]+", s)
+    if latex_cmds and len(s) >= 80:
+        # Keep normal clauses that contain a small amount of OCR LaTeX residue
+        # like "30\\mathrm{min}", but drop formula-dense chunks.
+        cmd_density = sum(len(cmd) for cmd in latex_cmds) / max(1, len(s))
+        stripped = re.sub(r"\\[A-Za-z]+\s*(?:\{[^{}]{0,40}\})?", " ", s)
+        if len(latex_cmds) >= 4 and (cmd_density >= 0.10 or _readable_ratio(stripped) < 0.45):
+            return True
     if len(s) >= 120 and _readable_ratio(s) < 0.5:
         return True
     return False

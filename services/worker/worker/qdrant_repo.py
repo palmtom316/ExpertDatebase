@@ -198,6 +198,11 @@ class QdrantHttpRepo:
             json=body,
             timeout=self.timeout_s,
         )
+        if resp.status_code == 404:
+            # Fresh deployments may not have created the collection yet.
+            # In that case there is nothing to delete and indexing can continue.
+            self._collection_ready = False
+            return
         resp.raise_for_status()
 
 

@@ -78,3 +78,28 @@ def test_worker_qdrant_upsert_retries_on_timeout(monkeypatch: pytest.MonkeyPatch
 
     # one put for ensure-collection + two puts for upsert (first timeout, second success)
     assert calls["put"] == 3
+
+
+def test_worker_qdrant_delete_by_version_ignores_missing_collection(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, json: dict, timeout: float):  # noqa: ARG001
+        assert url.endswith("/collections/chunks_v1/points/delete?wait=true")
+        return _Resp(404, text='{"status":"error","result":"Not found"}')
+
+    monkeypatch.setattr("worker.qdrant_repo.requests.post", fake_post)
+
+    repo = QdrantHttpRepo(endpoint="http://qdrant:6333", collection="chunks_v1", vector_name="text_embedding")
+    repo._collection_ready = True
+    repo.delete_by_version("ver_x")
+    assert repo._collection_ready is False
+
+
+def test_worker_qdrant_delete_by_version_raises_on_server_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, json: dict, timeout: float):  # noqa: ARG001
+        assert url.endswith("/collections/chunks_v1/points/delete?wait=true")
+        return _Resp(500, text='{"status":"error"}')
+
+    monkeypatch.setattr("worker.qdrant_repo.requests.post", fake_post)
+
+    repo = QdrantHttpRepo(endpoint="http://qdrant:6333", collection="chunks_v1", vector_name="text_embedding")
+    with pytest.raises(requests.HTTPError):
+        repo.delete_by_version("ver_x")

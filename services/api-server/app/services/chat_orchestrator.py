@@ -386,7 +386,7 @@ def _is_explanation_citation(citation: dict[str, Any]) -> bool:
 
 _CLAUSE_ID_PATTERN = re.compile(r"(?<!\d)\d{1,2}(?:\.\d+){1,4}(?:\([0-9A-Za-z]+\))?(?!\d)")
 _LISTING_HINTS = ("有哪些", "包括哪些", "包含哪些", "列出", "清单", "哪些要求", "哪些规定")
-_INSTALL_PRIORITY_ROOTS = ("4.6", "4.8")
+_INSTALL_PRIORITY_ROOTS = ("3.0", "4.6", "4.8")
 
 
 def _extract_clause_ids_from_question(question: str) -> list[str]:
@@ -551,17 +551,68 @@ def _pick_target_clauses(question: str, citations: list[dict[str, Any]]) -> tupl
     listing_limit = max(2, int(os.getenv("CHAT_CLAUSE_TEMPLATE_LISTING_FAMILIES", "3")))
     target_roots: list[str] = []
     install_listing = _question_has_install_intent(question) and not _question_has_vacuum_terms(question)
-    if install_listing:
-        citation_roots = {_clause_root(str(c.get("clause_id") or "")) for c in citations if str(c.get("clause_id") or "").strip()}
-        for anchor in _INSTALL_PRIORITY_ROOTS:
-            if anchor in ranked_roots or anchor in citation_roots:
-                if anchor not in target_roots:
-                    target_roots.append(anchor)
-        for hints in (_INSTALL_INTERNAL_HINTS, _INSTALL_ACCESSORY_HINTS):
-            root = next((r for r in ranked_roots if any(h in str(root_texts.get(r) or "") for h in hints)), "")
+    transformer_install_listing = install_listing and _question_has_transformer_terms(question)
+    focus_terms = _extract_listing_focus_terms(question=question)
+    all_roots: list[str] = []
+    seen_all_roots: set[str] = set()
+    for item in citations:
+        clause_id = str(item.get("clause_id") or "").strip()
+        if not clause_id:
+            continue
+        root = _clause_root(clause_id)
+        if not root or root in seen_all_roots:
+            continue
+        seen_all_roots.add(root)
+        all_roots.append(root)
+    focus_roots: list[str] = []
+    if install_listing and focus_terms:
+        for root in all_roots:
+            if transformer_install_listing and root not in _INSTALL_PRIORITY_ROOTS:
+                continue
+            if not _is_install_root_candidate(root=root, root_text=str(root_texts.get(root) or "")):
+                continue
+            family = [c for c in citations if _same_clause_family(str(c.get("clause_id") or ""), root)]
+            if _has_focus_install_evidence(family, focus_terms):
+                focus_roots.append(root)
+        if not focus_roots:
+            for root in all_roots:
+                if root in focus_roots:
+                    continue
+                if transformer_install_listing and root not in _INSTALL_PRIORITY_ROOTS:
+                    continue
+                if not _is_install_root_candidate(root=root, root_text=str(root_texts.get(root) or "")):
+                    continue
+                family = [c for c in citations if _same_clause_family(str(c.get("clause_id") or ""), root)]
+                has_focus = any(
+                    term in _citation_text_for_match(citation=item, max_len=900)
+                    for term in focus_terms
+                    for item in family
+                )
+                if has_focus:
+                    focus_roots.append(root)
+        for root in focus_roots:
             if root and root not in target_roots:
                 target_roots.append(root)
+            if len(target_roots) >= listing_limit:
+                break
+    if install_listing:
+        for anchor in _INSTALL_PRIORITY_ROOTS:
+            if anchor not in target_roots:
+                target_roots.append(anchor)
+        if not transformer_install_listing:
+            for hints in (_INSTALL_INTERNAL_HINTS, _INSTALL_ACCESSORY_HINTS):
+                root = next((r for r in ranked_roots if any(h in str(root_texts.get(r) or "") for h in hints)), "")
+                if root and root not in target_roots:
+                    target_roots.append(root)
+    allow_general_fallback = not (install_listing and bool(focus_roots))
+    if transformer_install_listing:
+        allow_general_fallback = False
     for root in ranked_roots:
+        if not allow_general_fallback and root not in _INSTALL_PRIORITY_ROOTS:
+            continue
+        if install_listing and root not in _INSTALL_PRIORITY_ROOTS:
+            if not _is_install_root_candidate(root=root, root_text=str(root_texts.get(root) or "")):
+                continue
         if not root or root in target_roots:
             continue
         target_roots.append(root)
@@ -585,6 +636,12 @@ def _attach_clause_family_siblings(question: str, citations: list[dict[str, Any]
         return citations
 
     listing = _is_listing_clause_query(question)
+    transformer_install_listing = (
+        listing
+        and _question_has_install_intent(question)
+        and not _question_has_vacuum_terms(question)
+        and _question_has_transformer_terms(question)
+    )
     sibling_limit = max(4, int(os.getenv("CHAT_CLAUSE_TEMPLATE_SIBLING_LIMIT", "12")))
     if listing:
         sibling_limit = max(sibling_limit, int(os.getenv("CHAT_CLAUSE_TEMPLATE_SIBLING_LIMIT_LISTING", "16")))
@@ -609,24 +666,53 @@ def _attach_clause_family_siblings(question: str, citations: list[dict[str, Any]
 
     primary_doc_id = next((str(c.get("doc_id") or "").strip() for c in citations if str(c.get("doc_id") or "").strip()), "")
     for target in targets:
-        must = [
-            {"key": "clause_id", "match": {"value": target}},
-            {"key": "source_type", "match": {"any": ["text", "explanation", "section_summary"]}},
-        ]
+        must = [{"key": "source_type", "match": {"any": ["text", "explanation", "section_summary"]}}]
         if primary_doc_id:
             must.append({"key": "doc_id", "match": {"value": primary_doc_id}})
-        sibling_filter = {"must": must}
-        try:
-            sibling_hits = fetch_fn(filter_json=sibling_filter, limit=sibling_limit) or []
-        except Exception:  # noqa: BLE001
-            sibling_hits = []
-        if family_mode and not sibling_hits:
+        sibling_filter = {"must": list(must)}
+        sibling_hits: list[dict[str, Any]] = []
+        if family_mode:
             keyword_fn = getattr(repo, "keyword_search", None)
+            section_hits: list[dict[str, Any]] = []
             if callable(keyword_fn):
                 try:
                     sibling_hits = keyword_fn(query_text=target, filter_json=sibling_filter, limit=sibling_limit) or []
                 except Exception:  # noqa: BLE001
                     sibling_hits = []
+            section_filter = {"must": list(must) + [{"key": "section_no", "match": {"value": target}}]}
+            try:
+                section_hits = fetch_fn(filter_json=section_filter, limit=max(sibling_limit * 3, 36)) or []
+            except Exception:  # noqa: BLE001
+                section_hits = []
+            if section_hits:
+                sibling_hits.extend(section_hits)
+            if not sibling_hits:
+                try:
+                    sibling_hits = fetch_fn(filter_json=sibling_filter, limit=max(sibling_limit * 2, 24)) or []
+                except Exception:  # noqa: BLE001
+                    sibling_hits = []
+            if transformer_install_listing and target == "3.0":
+                exact_filter = {
+                    "must": list(must)
+                    + [
+                        {
+                            "key": "clause_id",
+                            "match": {"any": list(_INSTALL_REQUIRED_CLAUSE_IDS)},
+                        }
+                    ]
+                }
+                try:
+                    exact_hits = fetch_fn(filter_json=exact_filter, limit=max(8, sibling_limit)) or []
+                except Exception:  # noqa: BLE001
+                    exact_hits = []
+                if exact_hits:
+                    sibling_hits.extend(exact_hits)
+        else:
+            sibling_filter["must"].insert(0, {"key": "clause_id", "match": {"value": target}})
+            try:
+                sibling_hits = fetch_fn(filter_json=sibling_filter, limit=sibling_limit) or []
+            except Exception:  # noqa: BLE001
+                sibling_hits = []
         for hit in sibling_hits:
             payload = (hit or {}).get("payload") if isinstance(hit, dict) else None
             if not isinstance(payload, dict):
@@ -674,6 +760,21 @@ _CN_STOP_TERMS = {
     "是否",
 }
 _CN_STOP_CHARS = set("的了吗呢吧啊呀和及并且或与在对将把为于被就都其")
+_LISTING_GENERIC_FOCUS_TERMS = {
+    "安装",
+    "规定",
+    "要求",
+    "条文",
+    "内容",
+    "清单",
+    "规范",
+    "标准",
+    "工程",
+    "设备",
+    "电器",
+    "高压电器",
+}
+_LISTING_FOCUS_TRIM_SUFFIXES = ("安装", "规定", "要求", "条文", "内容", "清单", "相关", "有关")
 
 
 def _clean_question_for_terms(question: str) -> str:
@@ -746,6 +847,67 @@ def _extract_question_match_terms(question: str) -> list[str]:
     return out
 
 
+def _extract_listing_focus_terms(question: str, max_terms: int = 3) -> list[str]:
+    q = _clean_question_for_terms(question)
+    if not q:
+        return []
+    raw_terms: list[str] = []
+    for run in re.findall(r"[\u4e00-\u9fff]{2,36}", q):
+        segments = _split_cn_run(run) or [run]
+        for seg in segments:
+            term = seg
+            for suffix in _LISTING_FOCUS_TRIM_SUFFIXES:
+                if term.endswith(suffix) and len(term) - len(suffix) >= 2:
+                    term = term[: -len(suffix)]
+                    break
+            term = term.strip()
+            if len(term) < 2:
+                continue
+            if term in _LISTING_GENERIC_FOCUS_TERMS:
+                continue
+            if not _valid_cn_term(term):
+                continue
+            raw_terms.append(term)
+
+    # Keep longer, more specific terms first and drop strict substrings.
+    unique = sorted(set(raw_terms), key=lambda x: (-len(x), x))
+    out: list[str] = []
+    for term in unique:
+        if any(term in kept for kept in out):
+            continue
+        out.append(term)
+        if len(out) >= max(1, int(max_terms)):
+            break
+    return out
+
+
+def _has_focus_install_evidence(citations: list[dict[str, Any]], focus_terms: list[str]) -> bool:
+    if not citations or not focus_terms:
+        return False
+    for c in citations:
+        text = _citation_text_for_match(citation=c, max_len=1200)
+        if not text or "安装" not in text:
+            continue
+        for term in focus_terms:
+            if term not in text:
+                continue
+            # Prefer near match, but allow looser same-snippet co-occurrence.
+            if re.search(rf"{re.escape(term)}[^。；;，,:\n]{{0,12}}安装|安装[^。；;，,:\n]{{0,12}}{re.escape(term)}", text):
+                return True
+            return True
+    return False
+
+
+def _build_listing_focus_miss_answer(focus_terms: list[str], install_intent: bool) -> str:
+    topic = "、".join([t for t in focus_terms if t][:2]).strip() or "当前主题"
+    target = f"{topic}安装" if install_intent else topic
+    return (
+        "条文规定：\n"
+        f"1. 证据不足：当前检索结果未找到与“{target}”直接对应的条文证据。\n"
+        "2. 建议：限定标准号或指定文档后重试，避免跨章节误命中。"
+    )
+
+
 def _question_has_install_intent(question: str) -> bool:
     q = str(question or "").strip()
     if not q:
@@ -758,6 +920,13 @@ def _question_has_vacuum_terms(question: str) -> bool:
     if not q:
         return False
     return any(token in q for token in ("真空", "注油", "抽真空", "氮气"))
+
+
+def _question_has_transformer_terms(question: str) -> bool:
+    q = str(question or "").strip()
+    if not q:
+        return False
+    return any(token in q for token in _TRANSFORMER_INSTALL_HINTS)
 
 
 def _question_to_citation_relevance(question: str, citation: dict[str, Any]) -> float:
@@ -786,6 +955,19 @@ def _clause_depth(clause_id: str) -> int:
     return len([p for p in value.split(".") if p])
 
 
+def _clause_numeric_key(clause_id: str) -> tuple[int, ...] | None:
+    value = re.sub(r"\([0-9A-Za-z]+\)$", "", str(clause_id or "").strip())
+    parts = [p for p in value.split(".") if p]
+    if not parts:
+        return None
+    nums: list[int] = []
+    for part in parts:
+        if not part.isdigit():
+            return None
+        nums.append(int(part))
+    return tuple(nums)
+
+
 def _same_clause_family(clause_id: str, root_clause: str) -> bool:
     cid = str(clause_id or "").strip()
     root = str(root_clause or "").strip()
@@ -803,10 +985,63 @@ _INSTALL_ACCESSORY_HINTS = (
     "套管的安装",
     "压力释放装置",
 )
+_INSTALL_PRECONDITION_HINTS = ("施工前", "安装前", "投入运行前", "具备下列条件")
+_TRANSFORMER_INSTALL_HINTS = ("变压器", "电抗器", "互感器")
+_INSTALL_REQUIRED_CLAUSE_IDS = ("3.0.6", "3.0.7")
+_LISTING_NOISE_MARKERS = (
+    "统一书号",
+    "定价",
+    "印张",
+    "印刷",
+    "前言",
+    "公告",
+    "住房和城乡建设部",
+)
+
+
+def _is_listing_noise_text(text: str) -> bool:
+    value = str(text or "")
+    if not value:
+        return False
+    return any(marker in value for marker in _LISTING_NOISE_MARKERS)
+
+
+def _is_install_root_candidate(root: str, root_text: str) -> bool:
+    value = str(root or "").strip()
+    if not value:
+        return False
+    if value in _INSTALL_PRIORITY_ROOTS:
+        return True
+    major = _clause_major(value)
+    if not major.isdigit():
+        return False
+    major_num = int(major)
+    if major_num < 3:
+        return False
+    if major_num <= 9:
+        return True
+    text = str(root_text or "")
+    if _is_listing_noise_text(text):
+        return False
+    has_install_signal = any(
+        token in text
+        for token in ("安装", "连接", "附件", "本体", "施工", "就位", "变压器")
+    )
+    has_hint_signal = any(token in text for token in (*_INSTALL_INTERNAL_HINTS, *_INSTALL_ACCESSORY_HINTS, *_INSTALL_PRECONDITION_HINTS))
+    has_rule_signal = any(token in text for token in ("应", "不得", "规定", "符合", "条文"))
+    if major_num >= 10 and not (has_hint_signal or (has_install_signal and has_rule_signal)):
+        return False
+    return has_install_signal or has_hint_signal
+
+
+def _is_listing_noise_citation(citation: dict[str, Any]) -> bool:
+    text = _citation_text_for_match(citation=citation, max_len=1200)
+    return _is_listing_noise_text(text)
 
 
 def _citation_clause_weight(question: str, citation: dict[str, Any], listing_query: bool = False) -> float:
     clause_id = str(citation.get("clause_id") or "").strip()
+    major = _clause_major(clause_id)
     source_type = str(citation.get("source_type") or "").strip().lower()
     text = _citation_text_for_match(citation)
     weight = 1.0
@@ -822,8 +1057,16 @@ def _citation_clause_weight(question: str, citation: dict[str, Any], listing_que
     weight += min(0.6, _clause_depth(clause_id) * 0.2)
     weight += min(12.0, _question_to_citation_relevance(question=question, citation=citation))
     if listing_query and _question_has_install_intent(question) and not _question_has_vacuum_terms(question):
+        if major.isdigit():
+            major_num = int(major)
+            if major_num < 3:
+                weight -= 3.0
+            elif major_num >= 10:
+                weight -= 0.8
         if any(token in text for token in _VACUUM_HINTS):
             weight -= 1.8
+        if _is_listing_noise_citation(citation):
+            weight -= 6.0
     return weight
 
 
@@ -902,7 +1145,27 @@ def _rank_clause_roots_for_listing(question: str, citations: list[dict[str, Any]
             score += min(7.0, install_hits * 0.3)
             score += min(5.0, (install_hits * 40.0) / text_len)
             score -= min(8.0, vac_hits * 0.2)
+            major = _clause_major(root)
+            if major.isdigit():
+                major_num = int(major)
+                if major_num in {3, 4}:
+                    score += 1.5
+                elif major_num < 3:
+                    score -= 2.0
+                elif major_num >= 10:
+                    score -= 1.0
         root_scores[root] = score
+
+    if install_listing:
+        ranked_roots = list(root_scores.keys())
+        return sorted(
+            ranked_roots,
+            key=lambda r: (
+                -root_scores[r],
+                -len(by_root_clause_ids.get(r, set())),
+                r,
+            ),
+        )
 
     major_scores: dict[str, float] = {}
     for root, score in root_scores.items():
@@ -942,6 +1205,18 @@ def _build_fixed_clause_answer(question: str, citations: list[dict[str, Any]]) -
         if roots
         else list(citations)
     )
+    if listing_query:
+        focus_terms = _extract_listing_focus_terms(question=question)
+        install_intent = _question_has_install_intent(question)
+        if install_intent and focus_terms:
+            has_focus_install = _has_focus_install_evidence(scoped, focus_terms)
+            has_install_anchor = any(
+                _clause_root(str(c.get("clause_id") or "").strip()) in _INSTALL_PRIORITY_ROOTS
+                for c in scoped
+                if str(c.get("clause_id") or "").strip()
+            )
+            if not has_focus_install and not has_install_anchor:
+                return _build_listing_focus_miss_answer(focus_terms=focus_terms, install_intent=True)
 
     explanation = [c for c in scoped if _is_explanation_citation(c)]
     clauses = [c for c in scoped if not _is_explanation_citation(c)]
@@ -954,33 +1229,170 @@ def _build_fixed_clause_answer(question: str, citations: list[dict[str, Any]]) -
     clauses_primary = [c for c in clauses if str(c.get("source_type") or "").strip().lower() not in {"section_summary"}]
     clause_limit = 6 if listing_query else 5
     explanation_limit = 4 if not listing_query else 5
+    transformer_install_listing = (
+        listing_query
+        and _question_has_install_intent(question)
+        and not _question_has_vacuum_terms(question)
+        and _question_has_transformer_terms(question)
+    )
     if listing_query and roots:
         ordered_candidates: list[dict[str, Any]] = []
         used_keys: set[tuple[str, int | None, int | None, str, str, str]] = set()
+        used_clause_ids: set[str] = set()
         for root in roots:
             family = [c for c in clauses if _same_clause_family(str(c.get("clause_id") or ""), root)]
             if not family:
                 continue
+            family = sorted(
+                family,
+                key=lambda item: (
+                    -_citation_clause_weight(question=question, citation=item, listing_query=True),
+                    int(item.get("page_start") or 0),
+                    str(item.get("clause_id") or ""),
+                ),
+            )
+            if transformer_install_listing and root == "3.0":
+                for required_clause_id in _INSTALL_REQUIRED_CLAUSE_IDS:
+                    required_clause = next(
+                        (
+                            c
+                            for c in family
+                            if str(c.get("clause_id") or "").strip() == required_clause_id
+                            and required_clause_id not in used_clause_ids
+                        ),
+                        None,
+                    )
+                    if required_clause is None:
+                        continue
+                    required_key = _citation_key(required_clause)
+                    if required_key in used_keys:
+                        continue
+                    used_keys.add(required_key)
+                    used_clause_ids.add(required_clause_id)
+                    ordered_candidates.append(required_clause)
+                if all(required_clause_id in used_clause_ids for required_clause_id in _INSTALL_REQUIRED_CLAUSE_IDS):
+                    continue
+            if transformer_install_listing and root == "4.8":
+                section_anchor = next(
+                    (
+                        c
+                        for c in family
+                        if str(c.get("source_type") or "").strip().lower() == "section_summary"
+                        and (
+                            "本体及附件安装" in _citation_text_for_match(citation=c, max_len=800)
+                            or str(c.get("clause_id") or "").strip() == "4.8"
+                        )
+                    ),
+                    None,
+                )
+                if section_anchor is not None:
+                    section_key = _citation_key(section_anchor)
+                    section_id = str(section_anchor.get("clause_id") or "").strip()
+                    if section_key not in used_keys and (not section_id or section_id not in used_clause_ids):
+                        used_keys.add(section_key)
+                        if section_id:
+                            used_clause_ids.add(section_id)
+                        ordered_candidates.append(section_anchor)
+            family_for_preferred = list(family)
+            if transformer_install_listing and root == "4.8":
+                install_family = [
+                    c
+                    for c in family
+                    if "安装" in _citation_text_for_match(citation=c, max_len=900)
+                ]
+                if install_family:
+                    family_for_preferred = install_family
             preferred = next(
                 (
                     c
-                    for c in family
+                    for c in family_for_preferred
                     if str(c.get("source_type") or "").strip().lower() not in {"section_summary"}
                 ),
                 None,
             )
             if preferred is None:
-                preferred = family[0]
+                preferred = family_for_preferred[0]
+            preferred_clause_id = str(preferred.get("clause_id") or "").strip()
+            if preferred_clause_id and preferred_clause_id in used_clause_ids:
+                alt = next(
+                    (
+                        c
+                        for c in family_for_preferred
+                        if str(c.get("clause_id") or "").strip()
+                        and str(c.get("clause_id") or "").strip() not in used_clause_ids
+                    ),
+                    None,
+                )
+                if alt is not None:
+                    preferred = alt
+                    preferred_clause_id = str(preferred.get("clause_id") or "").strip()
             key = _citation_key(preferred)
             if key in used_keys:
                 continue
             used_keys.add(key)
+            if preferred_clause_id:
+                used_clause_ids.add(preferred_clause_id)
             ordered_candidates.append(preferred)
-        for c in (clauses_primary or clauses or citations):
+            preferred_num = _clause_numeric_key(preferred_clause_id)
+            if preferred_num and preferred_num[-1] > 0 and not (transformer_install_listing and root == "3.0"):
+                prev_num = (*preferred_num[:-1], preferred_num[-1] - 1)
+                prev_clause = next(
+                    (
+                        c
+                        for c in family
+                        if _clause_numeric_key(str(c.get("clause_id") or "").strip()) == prev_num
+                    ),
+                    None,
+                )
+                if prev_clause is not None:
+                    prev_clause_id = str(prev_clause.get("clause_id") or "").strip()
+                    prev_key = _citation_key(prev_clause)
+                    if prev_key not in used_keys and (not prev_clause_id or prev_clause_id not in used_clause_ids):
+                        used_keys.add(prev_key)
+                        if prev_clause_id:
+                            used_clause_ids.add(prev_clause_id)
+                        ordered_candidates.append(prev_clause)
+            if _question_has_install_intent(question) and not _question_has_vacuum_terms(question):
+                precondition_clause = next(
+                    (
+                        c
+                        for c in family
+                        if str(c.get("clause_id") or "").strip() not in used_clause_ids
+                        and any(
+                            token in _citation_text_for_match(citation=c, max_len=800)
+                            for token in _INSTALL_PRECONDITION_HINTS
+                        )
+                    ),
+                    None,
+                )
+                if precondition_clause is not None:
+                    precondition_id = str(precondition_clause.get("clause_id") or "").strip()
+                    precondition_key = _citation_key(precondition_clause)
+                    if precondition_key not in used_keys and (
+                        not precondition_id or precondition_id not in used_clause_ids
+                    ):
+                        used_keys.add(precondition_key)
+                        if precondition_id:
+                            used_clause_ids.add(precondition_id)
+                        ordered_candidates.append(precondition_clause)
+        ranked_tail = sorted(
+            (clauses_primary or clauses or citations),
+            key=lambda item: (
+                -_citation_clause_weight(question=question, citation=item, listing_query=True),
+                int(item.get("page_start") or 0),
+                str(item.get("clause_id") or ""),
+            ),
+        )
+        for c in ranked_tail:
+            cid = str(c.get("clause_id") or "").strip()
+            if cid and cid in used_clause_ids:
+                continue
             key = _citation_key(c)
             if key in used_keys:
                 continue
             used_keys.add(key)
+            if cid:
+                used_clause_ids.add(cid)
             ordered_candidates.append(c)
             if len(ordered_candidates) >= clause_limit:
                 break
@@ -1005,9 +1417,41 @@ def _build_fixed_clause_answer(question: str, citations: list[dict[str, Any]]) -
     if explanation_lines:
         lines.append("")
         lines.append("条文说明：")
-        for idx, line in enumerate(explanation_lines, start=1):
-            lines.append(f"{idx}. {line}")
+    for idx, line in enumerate(explanation_lines, start=1):
+        lines.append(f"{idx}. {line}")
     return "\n".join(lines).strip()
+
+
+def _select_template_output_citations(question: str, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not citations:
+        return []
+    if not _is_listing_clause_query(question):
+        return citations
+    roots, _ = _pick_target_clauses(question=question, citations=citations)
+    scoped: list[dict[str, Any]] = []
+    for c in citations:
+        clause_id = str(c.get("clause_id") or "").strip()
+        if not clause_id:
+            continue
+        if roots and not any(_same_clause_family(clause_id, root) for root in roots):
+            continue
+        source_type = str(c.get("source_type") or "").strip().lower()
+        if source_type not in {"text", "explanation", "section_summary"}:
+            continue
+        if _is_listing_noise_citation(c):
+            continue
+        scoped.append(c)
+    scoped = sorted(
+        scoped,
+        key=lambda item: (
+            -_citation_clause_weight(question=question, citation=item, listing_query=True),
+            int(item.get("page_start") or 0),
+            str(item.get("clause_id") or ""),
+            str(item.get("source_type") or ""),
+        ),
+    )
+    limit = max(8, int(os.getenv("CHAT_CLAUSE_TEMPLATE_OUTPUT_CITATION_LIMIT_LISTING", "24")))
+    return scoped[:limit]
 
 
 def chat_with_citations(
@@ -1049,11 +1493,17 @@ def chat_with_citations(
         template_citations = _attach_clause_family_siblings(question=question, citations=citations, repo=repo)
         fixed_answer = _build_fixed_clause_answer(question=question, citations=template_citations)
         if fixed_answer:
+            output_citations = _select_template_output_citations(
+                question=question,
+                citations=template_citations,
+            )
+            if "证据不足：" in fixed_answer:
+                output_citations = []
             return {
                 "answer": fixed_answer,
                 "mode": "qa",
-                "citations": template_citations,
-                "expandable_evidence": _build_expandable_evidence(template_citations),
+                "citations": output_citations,
+                "expandable_evidence": _build_expandable_evidence(output_citations),
                 "llm": {"provider": "local", "model": "clause-template-v1"},
             }
 

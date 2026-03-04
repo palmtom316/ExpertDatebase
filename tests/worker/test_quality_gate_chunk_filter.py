@@ -60,3 +60,43 @@ def test_filter_drops_noisy_table_row_chunks() -> None:
     assert "tbl_t_9_1_1" not in ids
     assert "tbl_t_9_1_2" in ids
     assert stats["dropped_noise"] >= 1
+
+
+def test_filter_keeps_clause_with_single_latex_residue() -> None:
+    chunks = [
+        {
+            "chunk_id": "c_latex_keep",
+            "text": (
+                "4.8.4 冷却装置在安装前应按制造厂规定的压力值进行密封试验，"
+                "冷却器持续 30\\mathrm{min} 应无渗漏。"
+            ),
+        }
+    ]
+
+    out, stats = filter_chunks_for_indexing(chunks)
+    ids = [x.get("chunk_id") for x in out]
+    assert "c_latex_keep" in ids
+    assert stats["dropped_noise"] == 0
+
+
+def test_filter_drops_formula_dense_latex_noise() -> None:
+    chunks = [
+        {
+            "chunk_id": "c_latex_noise",
+            "text": (
+                "\\alpha \\beta \\gamma \\delta \\epsilon "
+                "\\mathrm{A} \\mathrm{B} \\mathrm{C} "
+                "\\frac{x}{y} \\sqrt{z} \\sum_{i=1}^{n} x_i"
+            ),
+        },
+        {
+            "chunk_id": "c_anchor",
+            "text": "3.0.6 变压器在安装前应完成交接试验并符合技术文件要求。",
+        },
+    ]
+
+    out, stats = filter_chunks_for_indexing(chunks)
+    ids = [x.get("chunk_id") for x in out]
+    assert "c_latex_noise" not in ids
+    assert "c_anchor" in ids
+    assert stats["dropped_noise"] >= 1

@@ -8,6 +8,17 @@ from collections import Counter
 from difflib import SequenceMatcher
 from typing import Any
 
+_LATEX_CMD_WITH_ARG_RE = re.compile(r"\\([A-Za-z]+)\s*\{\s*([^{}]{0,120})\s*\}")
+_LATEX_CMD_RE = re.compile(r"\\[A-Za-z]+")
+_LATEX_SYMBOL_MAP = {
+    "sim": "~",
+    "times": "x",
+    "cdot": "·",
+    "leq": "<=",
+    "geq": ">=",
+    "pm": "±",
+}
+
 
 def _is_toc_like(text: str) -> bool:
     s = str(text or "").strip()
@@ -29,8 +40,44 @@ def _is_toc_like(text: str) -> bool:
     return False
 
 
+def _normalize_latex_inner(inner: str) -> str:
+    value = re.sub(r"\s+", " ", str(inner or "")).strip()
+    if not value:
+        return ""
+    # Unit-like tokens are often OCR-split as "k V" / "m i n"; compact them.
+    if re.fullmatch(r"[A-Za-z0-9%°Ωμµ./:+\-~]+(?:\s+[A-Za-z0-9%°Ωμµ./:+\-~]+)*", value):
+        return re.sub(r"\s+", "", value)
+    return value
+
+
+def _strip_latex_residue(text: str) -> str:
+    s = str(text or "")
+    s = s.replace("$", " ")
+    # Some OCR outputs escape backslashes as "\\mathrm"; collapse to a single slash.
+    s = re.sub(r"\\{2,}(?=[A-Za-z])", r"\\", s)
+
+    def _replace_with_inner(match: re.Match[str]) -> str:
+        cmd = str(match.group(1) or "").strip().lower()
+        inner = _normalize_latex_inner(match.group(2) or "")
+        if inner:
+            return inner
+        return _LATEX_SYMBOL_MAP.get(cmd, " ")
+
+    s = _LATEX_CMD_WITH_ARG_RE.sub(_replace_with_inner, s)
+
+    for cmd, sym in _LATEX_SYMBOL_MAP.items():
+        s = re.sub(rf"\\{cmd}\b", f" {sym} ", s)
+
+    s = _LATEX_CMD_RE.sub(" ", s)
+    s = s.replace("{", " ").replace("}", " ")
+    # Keep number+unit readable (e.g. 30min -> 30 min, 220kV -> 220 kV).
+    s = re.sub(r"(?<=\d)(?=[A-Za-zμµΩ%°])", " ", s)
+    return s
+
+
 def _clean_block_text(text: str) -> str:
     s = str(text or "")
+    s = _strip_latex_residue(s)
     s = "".join(ch for ch in s if ch in ("\n", "\t") or ord(ch) >= 32)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -38,6 +85,7 @@ def _clean_block_text(text: str) -> str:
 
 def _clean_table_text(text: str) -> str:
     s = str(text or "")
+    s = _strip_latex_residue(s)
     s = "".join(ch for ch in s if ch in ("\n", "\t") or ord(ch) >= 32)
     lines = [re.sub(r"\s+", " ", line).strip() for line in s.splitlines() if line.strip()]
     return "\n".join(lines).strip()
@@ -96,8 +144,6 @@ def _is_low_quality_block(text: str) -> bool:
         return False
     lower = s.lower()
     if "%pdf-" in lower or "endstream" in lower:
-        return True
-    if len(s) > 100 and "\\mathrm" in s:
         return True
     # Excessive symbol density often means OCR/binary residue.
     symbol_ratio = sum(1 for ch in s if not (ch.isalnum() or ("\u4e00" <= ch <= "\u9fff") or ch.isspace())) / max(1, len(s))
