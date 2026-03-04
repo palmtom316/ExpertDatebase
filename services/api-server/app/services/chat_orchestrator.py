@@ -29,12 +29,17 @@ def _merge_text(existing: str, extra: str, max_len: int = 500) -> str:
         return b[:max_len]
     if b in a:
         return a[:max_len]
+    if a in b:
+        return b[:max_len]
     merged = f"{a}\n{b}"
     return merged[:max_len]
 
 
 def _clean_text(value: Any, max_len: int = 1000) -> str:
     text = str(value or "")
+    text = re.sub(r"table\s+images/\S+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<table[^>]*>.*?</table>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\$[^$]{0,200}\$", " ", text)
     text = re.sub(r"\\[a-zA-Z]+\s*\{[^}]*\}", " ", text)
     text = re.sub(r"\\[a-zA-Z]+", " ", text)
@@ -64,11 +69,18 @@ def _readable_ratio(text: str) -> float:
 
 
 def _pick_best_evidence_text(citation: dict[str, Any], max_len: int = 220) -> str:
-    excerpt = _clean_text(citation.get("excerpt"), max_len=max_len)
-    chunk_text = _clean_text(citation.get("chunk_text"), max_len=max_len)
-    if _readable_ratio(excerpt) >= 0.55:
+    raw_excerpt = str(citation.get("excerpt") or "")
+    raw_chunk = str(citation.get("chunk_text") or "")
+    excerpt = _clean_text(raw_excerpt, max_len=max_len)
+    chunk_text = _clean_text(raw_chunk, max_len=max_len)
+    chunk_readable = _readable_ratio(chunk_text) >= 0.55
+    excerpt_readable = _readable_ratio(excerpt) >= 0.55
+    # Prefer chunk text when stored excerpt is a short snapshot.
+    if chunk_readable and len(raw_chunk) > len(raw_excerpt) + 30:
+        return chunk_text
+    if excerpt_readable:
         return excerpt
-    if _readable_ratio(chunk_text) >= 0.55:
+    if chunk_readable:
         return chunk_text
     return excerpt or chunk_text
 
@@ -170,22 +182,31 @@ def _build_constraint_summary(question: str, constraints: list[dict[str, Any]]) 
 
 
 def _build_qa_prompt(question: str, citations: list[dict[str, Any]]) -> str:
+    has_explanation = any(
+        str(c.get("source_type") or "").strip().lower() == "explanation"
+        or str(c.get("route") or "").strip().lower() == "explanation_sibling"
+        for c in citations
+    )
     blocks: list[str] = []
-    for idx, c in enumerate(citations[:5], start=1):
+    for idx, c in enumerate(citations[:6], start=1):
         doc_name = str(c.get("doc_name") or "unknown")
         page = c.get("page_start")
+        source_type = str(c.get("source_type") or "").strip().lower()
+        evidence_tag = "条文说明" if source_type == "explanation" else "条文正文"
         excerpt = _pick_best_evidence_text(c, max_len=220)
         if not excerpt:
             excerpt = "（该页未提取到可读文本）"
-        blocks.append(f"[E{idx}] {doc_name} p.{page or '-'}: {excerpt}")
+        blocks.append(f"[E{idx}] {evidence_tag} | {doc_name} p.{page or '-'}: {excerpt}")
 
     evidence_text = "\n".join(blocks) if blocks else "（无可用证据）"
+    explanation_rule = "4) 若证据含“条文说明”，必须单列“条文说明”并给出对应解释要点。\n" if has_explanation else ""
     return (
         "你是投标文档问答助手。必须仅基于证据回答，禁止编造。\n"
         "回答要求：\n"
         "1) 先给出直接答案（中文，1-3句，尽量具体到数值/条款/时间/主体）。\n"
         "2) 若证据不足，明确说明“证据不足”并指出缺什么信息。\n"
         "3) 不要输出与问题无关的泛化套话。\n\n"
+        f"{explanation_rule}"
         f"问题：{question}\n"
         f"证据：\n{evidence_text}"
     )
@@ -204,6 +225,273 @@ def _stub_specific_answer(question: str, citations: list[dict[str, Any]]) -> str
     if not lines:
         return f"根据检索证据，问题“{question}”当前证据不足，建议查看原文后补充更多上下文。"
     return f"根据检索证据，问题“{question}”可参考以下具体内容：\n" + "\n".join(lines)
+
+
+def _is_explanation_citation(citation: dict[str, Any]) -> bool:
+    source_type = str(citation.get("source_type") or "").strip().lower()
+    route = str(citation.get("route") or "").strip().lower()
+    return source_type == "explanation" or route == "explanation_sibling"
+
+
+def _should_use_fixed_clause_format(question: str, citations: list[dict[str, Any]]) -> bool:
+    if not citations:
+        return False
+    has_clause = any(str(c.get("clause_id") or "").strip() for c in citations)
+    if not has_clause:
+        return False
+    q = str(question or "").strip()
+    if not q:
+        return False
+    if re.search(r"(?<!\d)\d{1,2}(?:\.\d+){1,4}(?:\([0-9A-Za-z]+\))?(?!\d)", q):
+        return True
+    return any(token in q for token in ["条文", "规定", "服从", "应符合"])
+
+
+def _format_clause_line(citation: dict[str, Any], max_len: int = 520) -> str:
+    text = _pick_best_evidence_text(citation, max_len=max_len)
+    if not text:
+        text = "（该页未提取到可读文本）"
+    doc_name = str(citation.get("doc_name") or "unknown").strip()
+    page = citation.get("page_start")
+    page_text = f"p.{page}" if page is not None else "p.-"
+    return f"{text}（{doc_name} {page_text}）"
+
+
+def _pick_section_lines(citations: list[dict[str, Any]], limit: int = 3) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for c in citations:
+        line = _format_clause_line(citation=c)
+        key = re.sub(r"\s+", "", line)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _repo_payload_to_citation(payload: dict[str, Any], route_default: str = "clause_sibling") -> dict[str, Any]:
+    return {
+        "doc_name": payload.get("doc_name", ""),
+        "doc_id": payload.get("doc_id", ""),
+        "page_start": payload.get("page_start"),
+        "page_end": payload.get("page_end"),
+        "excerpt": payload.get("excerpt", ""),
+        "chunk_text": payload.get("chunk_text", ""),
+        "route": payload.get("route", route_default),
+        "source_type": payload.get("source_type", ""),
+        "page_type": payload.get("page_type", ""),
+        "table_id": payload.get("table_id"),
+        "row_index": payload.get("row_index"),
+        "clause_id": payload.get("clause_id") or payload.get("clause_no"),
+        "table_repr": payload.get("table_repr"),
+    }
+
+
+def _env_enabled(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw not in {"0", "false", "no", "off", ""}
+
+
+def _attach_clause_family_siblings(question: str, citations: list[dict[str, Any]], repo: SearchRepo) -> list[dict[str, Any]]:
+    if not citations or not _env_enabled("CHAT_CLAUSE_TEMPLATE_ATTACH_SIBLINGS", default=True):
+        return citations
+    if not _should_use_fixed_clause_format(question=question, citations=citations):
+        return citations
+
+    dominant_clause = _pick_dominant_clause_id(question=question, citations=citations)
+    if not dominant_clause:
+        return citations
+
+    fetch_fn = getattr(repo, "fetch_by_filter", None)
+    if not callable(fetch_fn):
+        return citations
+
+    scoped_doc_ids = [
+        str(c.get("doc_id") or "").strip()
+        for c in citations
+        if _same_clause_family(str(c.get("clause_id") or ""), dominant_clause)
+    ]
+    primary_doc_id = next((x for x in scoped_doc_ids if x), "")
+
+    must = [
+        {"key": "clause_id", "match": {"value": dominant_clause}},
+        {"key": "source_type", "match": {"any": ["text", "explanation", "section_summary"]}},
+    ]
+    if primary_doc_id:
+        must.append({"key": "doc_id", "match": {"value": primary_doc_id}})
+    sibling_filter = {"must": must}
+    sibling_limit = max(4, int(os.getenv("CHAT_CLAUSE_TEMPLATE_SIBLING_LIMIT", "12")))
+    try:
+        sibling_hits = fetch_fn(filter_json=sibling_filter, limit=sibling_limit) or []
+    except Exception:  # noqa: BLE001
+        sibling_hits = []
+
+    out: list[dict[str, Any]] = []
+    seen_index: dict[tuple[str, int | None, int | None, str, str, str], int] = {}
+    for c in citations:
+        key = _citation_key(c)
+        if key in seen_index:
+            continue
+        seen_index[key] = len(out)
+        out.append(c)
+
+    for hit in sibling_hits:
+        payload = (hit or {}).get("payload") if isinstance(hit, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        c = _repo_payload_to_citation(payload=payload)
+        key = _citation_key(c)
+        if key in seen_index:
+            idx = seen_index[key]
+            prev = out[idx]
+            prev["excerpt"] = _merge_text(str(prev.get("excerpt") or ""), str(c.get("excerpt") or ""), max_len=1000)
+            prev["chunk_text"] = _merge_text(str(prev.get("chunk_text") or ""), str(c.get("chunk_text") or ""), max_len=4000)
+            prev["merged_count"] = int(prev.get("merged_count") or 1) + 1
+            continue
+        seen_index[key] = len(out)
+        out.append(c)
+
+    out.sort(
+        key=lambda x: (
+            str(x.get("clause_id") or ""),
+            int(x.get("page_start") or 0),
+            str(x.get("source_type") or ""),
+        )
+    )
+    return out
+
+
+def _citation_text_for_match(citation: dict[str, Any], max_len: int = 600) -> str:
+    return _pick_best_evidence_text(citation=citation, max_len=max_len).lower()
+
+
+def _extract_question_match_terms(question: str) -> list[str]:
+    q = str(question or "").lower()
+    q = re.sub(r"(?<!\d)\d{1,2}(?:\.\d+){1,4}(?:\([0-9A-Za-z]+\))?(?!\d)", " ", q)
+    q = re.sub(r"(回复|回答|查询到|没查询到|没有查询到|为什么|还是|但是|却)", " ", q)
+    q = re.sub(r"\s+", "", q)
+    terms: list[str] = []
+    runs = re.findall(r"[\u4e00-\u9fff]{2,24}", q)
+    for run in runs:
+        terms.append(run)
+        run_len = len(run)
+        for n in (2, 3, 4):
+            if run_len < n:
+                continue
+            for i in range(0, run_len - n + 1):
+                terms.append(run[i : i + n])
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in terms:
+        x = t.strip()
+        if len(x) < 2 or x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
+def _question_to_citation_relevance(question: str, citation: dict[str, Any]) -> float:
+    terms = _extract_question_match_terms(question)
+    if not terms:
+        return 0.0
+    text = _citation_text_for_match(citation)
+    if not text:
+        return 0.0
+    score = 0.0
+    for term in terms:
+        cnt = text.count(term)
+        if cnt <= 0:
+            continue
+        score += (1.0 + min(len(term), 8) * 0.1) * min(cnt, 3)
+    return score
+
+
+def _clause_depth(clause_id: str) -> int:
+    value = re.sub(r"\([0-9A-Za-z]+\)$", "", str(clause_id or "").strip())
+    return len([p for p in value.split(".") if p])
+
+
+def _same_clause_family(clause_id: str, root_clause: str) -> bool:
+    cid = str(clause_id or "").strip()
+    root = str(root_clause or "").strip()
+    if not cid or not root:
+        return False
+    return cid == root or cid.startswith(f"{root}.") or cid.startswith(f"{root}(")
+
+
+def _pick_dominant_clause_id(question: str, citations: list[dict[str, Any]]) -> str:
+    scores: dict[str, float] = {}
+    order: list[str] = []
+    for c in citations:
+        clause_id = str(c.get("clause_id") or "").strip()
+        if not clause_id:
+            continue
+        if clause_id not in scores:
+            scores[clause_id] = 0.0
+            order.append(clause_id)
+        source_type = str(c.get("source_type") or "").strip().lower()
+        weight = 1.0
+        if not _is_explanation_citation(c):
+            weight += 1.0
+        if source_type == "text":
+            weight += 0.6
+        if source_type == "section_summary":
+            weight -= 0.4
+        weight += min(0.6, _clause_depth(clause_id) * 0.2)
+        weight += min(12.0, _question_to_citation_relevance(question=question, citation=c))
+        scores[clause_id] += weight
+    if not scores:
+        return ""
+    best = order[0]
+    best_score = scores[best]
+    for cid in order[1:]:
+        score = scores[cid]
+        if score > best_score:
+            best = cid
+            best_score = score
+            continue
+        if score == best_score and _clause_depth(cid) > _clause_depth(best):
+            best = cid
+            best_score = score
+    return best
+
+
+def _build_fixed_clause_answer(question: str, citations: list[dict[str, Any]]) -> str | None:
+    if not _should_use_fixed_clause_format(question=question, citations=citations):
+        return None
+
+    dominant_clause = _pick_dominant_clause_id(question=question, citations=citations)
+    scoped = (
+        [c for c in citations if _same_clause_family(str(c.get("clause_id") or ""), dominant_clause)]
+        if dominant_clause
+        else list(citations)
+    )
+
+    explanation = [c for c in scoped if _is_explanation_citation(c)]
+    clauses = [c for c in scoped if not _is_explanation_citation(c)]
+    if not clauses and not explanation:
+        explanation = [c for c in citations if _is_explanation_citation(c)]
+        clauses = [c for c in citations if not _is_explanation_citation(c)]
+        if not clauses and not explanation:
+            return None
+
+    clauses_primary = [c for c in clauses if str(c.get("source_type") or "").strip().lower() not in {"section_summary"}]
+    clause_lines = _pick_section_lines(clauses_primary or clauses or citations, limit=5)
+    explanation_lines = _pick_section_lines(explanation, limit=4)
+
+    lines: list[str] = ["条文规定："]
+    for idx, line in enumerate(clause_lines, start=1):
+        lines.append(f"{idx}. {line}")
+    if explanation_lines:
+        lines.append("")
+        lines.append("条文说明：")
+        for idx, line in enumerate(explanation_lines, start=1):
+            lines.append(f"{idx}. {line}")
+    return "\n".join(lines).strip()
 
 
 def chat_with_citations(
@@ -236,6 +524,18 @@ def chat_with_citations(
             "expandable_evidence": _build_expandable_evidence(citations),
             "llm": {"provider": "local", "model": "constraint-summary"},
         }
+
+    if citations:
+        template_citations = _attach_clause_family_siblings(question=question, citations=citations, repo=repo)
+        fixed_answer = _build_fixed_clause_answer(question=question, citations=template_citations)
+        if fixed_answer:
+            return {
+                "answer": fixed_answer,
+                "mode": "qa",
+                "citations": template_citations,
+                "expandable_evidence": _build_expandable_evidence(template_citations),
+                "llm": {"provider": "local", "model": "clause-template-v1"},
+            }
 
     prompt = _build_qa_prompt(question=question, citations=citations)
 
