@@ -12,9 +12,17 @@ import requests
 
 class EmbeddingClient:
     def __init__(self, dim: int = 1024) -> None:
-        self.dim = int(os.getenv("EMBEDDING_DIM", str(dim)))
+        env_dim = str(os.getenv("EMBEDDING_DIM") or "").strip()
+        if env_dim:
+            self.dim = int(env_dim)
+            self._stub_dim_pinned = True
+        else:
+            self.dim = int(dim)
+            self._stub_dim_pinned = False
         self.provider = os.getenv("EMBEDDING_PROVIDER", "auto").strip().lower()
         self.timeout_s = float(os.getenv("EMBEDDING_HTTP_TIMEOUT_S", "15"))
+        self._cached_remote_stub_dim: int | None = None
+        self._remote_stub_dim_probed = False
 
     def _normalize_token(self, raw: str) -> str:
         token = str(raw or "").strip()
@@ -45,8 +53,59 @@ class EmbeddingClient:
             ).strip(),
         }
 
+    def _resolve_remote_stub_dim(self) -> int | None:
+        endpoint = str(os.getenv("VECTORDB_ENDPOINT") or "").strip()
+        if not endpoint:
+            return None
+        if not endpoint.startswith("http"):
+            endpoint = f"http://{endpoint}"
+        collection = str(os.getenv("QDRANT_COLLECTION") or "chunks_v1").strip() or "chunks_v1"
+        vector_name = str(os.getenv("QDRANT_VECTOR_NAME") or "text_embedding").strip() or "text_embedding"
+        try:
+            resp = requests.get(
+                f"{endpoint.rstrip('/')}/collections/{collection}",
+                timeout=min(self.timeout_s, 5.0),
+            )
+            resp.raise_for_status()
+            raw = resp.json()
+            body = raw if isinstance(raw, dict) else {}
+            vectors = ((((body or {}).get("result") or {}).get("config") or {}).get("params") or {}).get("vectors")
+            if isinstance(vectors, dict):
+                named = vectors.get(vector_name)
+                if isinstance(named, dict):
+                    size = int(named.get("size") or 0)
+                    if size > 0:
+                        return size
+                if "size" in vectors:
+                    size = int(vectors.get("size") or 0)
+                    if size > 0:
+                        return size
+                for value in vectors.values():
+                    if isinstance(value, dict):
+                        size = int(value.get("size") or 0)
+                        if size > 0:
+                            return size
+            return None
+        except Exception:
+            return None
+
+    def _stub_dim(self) -> int:
+        if self._stub_dim_pinned:
+            return max(1, int(self.dim))
+        if self._cached_remote_stub_dim is not None:
+            return self._cached_remote_stub_dim
+        if self._remote_stub_dim_probed:
+            return max(1, int(self.dim))
+        self._remote_stub_dim_probed = True
+        remote_dim = self._resolve_remote_stub_dim()
+        if remote_dim and remote_dim > 0:
+            self._cached_remote_stub_dim = int(remote_dim)
+            return self._cached_remote_stub_dim
+        return max(1, int(self.dim))
+
     def _stub(self, text: str) -> list[float]:
-        values = [0.0] * self.dim
+        dim = self._stub_dim()
+        values = [0.0] * dim
         normalized = str(text or "").lower()
         tokens: list[str] = []
         tokens.extend(re.findall(r"\d+(?:\.\d+)+", normalized))
@@ -57,7 +116,7 @@ class EmbeddingClient:
 
         for token in tokens:
             digest = hashlib.sha256(token.encode("utf-8")).digest()
-            idx = int.from_bytes(digest[:4], "big") % self.dim
+            idx = int.from_bytes(digest[:4], "big") % dim
             sign = 1.0 if (digest[4] & 1) == 0 else -1.0
             weight = 1.0 + min(len(token), 8) / 8.0
             values[idx] += sign * weight

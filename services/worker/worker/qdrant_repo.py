@@ -92,7 +92,8 @@ class QdrantHttpRepo:
         text = (body or "").lower()
         if status_code == 404:
             return True
-        if status_code == 400 and any(k in text for k in ["dimension", "vector", "wrong", "size", "not match"]):
+        allow_dim_recreate = str(os.getenv("QDRANT_ALLOW_RECREATE_ON_DIM_MISMATCH", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        if allow_dim_recreate and status_code == 400 and any(k in text for k in ["dimension", "vector", "wrong", "size", "not match"]):
             return True
         return False
 

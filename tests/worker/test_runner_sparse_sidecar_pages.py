@@ -47,6 +47,15 @@ class FakeQdrant:
         return None
 
 
+class FakeDocPagesRepo:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def upsert_pages(self, doc_id: str, version_id: str, pages):
+        self.calls.append((doc_id, version_id, list(pages)))
+        return len(list(pages))
+
+
 def test_runner_exports_page_sidecar_texts(tmp_path: Path) -> None:
     os.environ["SPARSE_SIDECAR_DOCS_ROOT"] = str(tmp_path)
     rt = WorkerRuntime(
@@ -65,3 +74,25 @@ def test_runner_exports_page_sidecar_texts(tmp_path: Path) -> None:
     assert page2.exists()
     assert "第一页 电容器说明" in page1.read_text(encoding="utf-8")
     assert "11.4.1" in page2.read_text(encoding="utf-8")
+
+
+def test_runner_upserts_doc_pages_for_sparse_retrieval(tmp_path: Path) -> None:
+    os.environ["SPARSE_SIDECAR_DOCS_ROOT"] = str(tmp_path)
+    doc_pages_repo = FakeDocPagesRepo()
+    rt = WorkerRuntime(
+        storage=FakeStorage(),
+        qdrant_repo=FakeQdrant(),
+        doc_registry=FakeRegistry(),
+        mineru_client=FakeMinerU(),
+        embedding_client=EmbeddingClient(),
+        doc_pages_repo=doc_pages_repo,
+    )
+    job = {"doc_id": "doc_8", "version_id": "ver_8", "object_key": "pdf/doc_8/ver_8/sample.pdf"}
+    summary = process_document_job(job, rt)
+
+    assert summary.get("doc_pages_upserted") == 2
+    assert len(doc_pages_repo.calls) == 1
+    _, _, rows = doc_pages_repo.calls[0]
+    assert len(rows) == 2
+    assert rows[0]["page_no"] == 1
+    assert "第一页 电容器说明" in rows[0]["text"]

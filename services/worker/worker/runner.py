@@ -32,6 +32,7 @@ class WorkerRuntime:
     embedding_client: EmbeddingClient
     asset_repo: Any | None = None
     entity_index: Any | None = None
+    doc_pages_repo: Any | None = None
 
 
 def _put_artifact_bytes(storage: Any, key: str, payload: bytes, content_type: str) -> bool:
@@ -86,43 +87,64 @@ def _mineru_pages_to_markdown(mineru_result: dict[str, Any]) -> str:
     return "\n\n".join(out).strip()
 
 
+def _page_rows_from_mineru(mineru_result: dict[str, Any], doc_id: str) -> list[dict[str, Any]]:
+    pages = mineru_result.get("pages") if isinstance(mineru_result, dict) else []
+    if not isinstance(pages, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_no = int(page.get("page_no") or 0)
+        if page_no <= 0:
+            continue
+        lines: list[str] = []
+        blocks = page.get("blocks") or []
+        tables = page.get("tables") or []
+        if isinstance(blocks, list):
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                text = str(block.get("text") or "").strip()
+                if text:
+                    lines.append(text)
+        if isinstance(tables, list):
+            for table in tables:
+                if not isinstance(table, dict):
+                    continue
+                text = str(table.get("raw_text") or "").strip()
+                if text:
+                    lines.append(text)
+        page_text = "\n".join(lines).strip()
+        if not page_text:
+            continue
+        out.append(
+            {
+                "page_no": page_no,
+                "text": page_text,
+                "source_path": f"{doc_id}/page_{page_no:03d}.txt",
+            }
+        )
+    return out
+
+
 def _export_sparse_sidecar_pages(mineru_result: dict[str, Any], doc_id: str) -> dict[str, Any]:
     root = Path(os.getenv("SPARSE_SIDECAR_DOCS_ROOT", "/data/docs"))
     target_dir = root / doc_id
-    pages = mineru_result.get("pages") if isinstance(mineru_result, dict) else []
-    if not isinstance(pages, list):
+    page_rows = _page_rows_from_mineru(mineru_result=mineru_result, doc_id=doc_id)
+    if not page_rows:
         return {"enabled": False, "reason": "invalid pages"}
 
     written = 0
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        for page in pages:
-            if not isinstance(page, dict):
-                continue
-            page_no = int(page.get("page_no") or 0)
-            if page_no <= 0:
-                continue
-            lines: list[str] = []
-            blocks = page.get("blocks") or []
-            tables = page.get("tables") or []
-            if isinstance(blocks, list):
-                for block in blocks:
-                    if not isinstance(block, dict):
-                        continue
-                    text = str(block.get("text") or "").strip()
-                    if text:
-                        lines.append(text)
-            if isinstance(tables, list):
-                for table in tables:
-                    if not isinstance(table, dict):
-                        continue
-                    text = str(table.get("raw_text") or "").strip()
-                    if text:
-                        lines.append(text)
-            if not lines:
+        for row in page_rows:
+            page_no = int(row.get("page_no") or 0)
+            text = str(row.get("text") or "").strip()
+            if page_no <= 0 or not text:
                 continue
             file_path = target_dir / f"page_{page_no:03d}.txt"
-            file_path.write_text("\n".join(lines), encoding="utf-8")
+            file_path.write_text(text, encoding="utf-8")
             written += 1
     except Exception as exc:  # noqa: BLE001
         return {"enabled": False, "reason": str(exc), "root": str(target_dir)}
@@ -137,6 +159,14 @@ def _env_enabled(name: str, default: bool) -> bool:
 
 def _doc_type_allowed_for_table_vl(doc_type: str) -> bool:
     raw = str(os.getenv("WORKER_TABLE_VL_FALLBACK_DOC_TYPES", "规范规程")).strip()
+    allow_types = {x.strip() for x in raw.split(",") if x.strip()}
+    if not allow_types:
+        return True
+    return str(doc_type or "").strip() in allow_types
+
+
+def _doc_type_allowed_for_langextract(doc_type: str) -> bool:
+    raw = str(os.getenv("WORKER_LANGEXTRACT_DOC_TYPES", "规范规程")).strip()
     allow_types = {x.strip() for x in raw.split(",") if x.strip()}
     if not allow_types:
         return True
@@ -237,6 +267,94 @@ def _extract_assets_from_normalized_pages(
     return out
 
 
+def _asset_fact_text(asset: dict[str, Any]) -> str:
+    asset_type = str(asset.get("asset_type") or "").strip().lower()
+    data = asset.get("data_json") if isinstance(asset.get("data_json"), dict) else {}
+    if not isinstance(data, dict):
+        return ""
+
+    if asset_type == "project":
+        parts: list[str] = []
+        if data.get("clause_no"):
+            parts.append(f"条款 {data.get('clause_no')}")
+        if data.get("voltage_level_kv") is not None:
+            parts.append(f"电压等级 {data.get('voltage_level_kv')}kV")
+        if data.get("contract_amount_rmb") is not None:
+            parts.append(f"合同金额 {data.get('contract_amount_rmb')} 元")
+        if data.get("standard_no"):
+            parts.append(f"标准号 {data.get('standard_no')}")
+        if data.get("certificate_no"):
+            parts.append(f"证书号 {data.get('certificate_no')}")
+        return "；".join([str(x).strip() for x in parts if str(x).strip()])
+
+    if asset_type == "person":
+        name = str(data.get("name") or "").strip()
+        role = str(data.get("role") or "").strip()
+        cert = str(data.get("certificate_no") or "").strip()
+        parts = []
+        if name:
+            parts.append(f"人员 {name}")
+        if role:
+            parts.append(f"角色 {role}")
+        if cert:
+            parts.append(f"证书号 {cert}")
+        return "；".join(parts)
+
+    if asset_type == "qualification":
+        person = str(data.get("person_name") or "").strip()
+        cert = str(data.get("certificate") or "").strip()
+        parts = []
+        if person:
+            parts.append(f"人员 {person}")
+        if cert:
+            parts.append(f"资质证书 {cert}")
+        return "；".join(parts)
+
+    if asset_type == "standard":
+        name = str(data.get("standard_name") or "").strip()
+        return f"执行标准 {name}" if name else ""
+
+    return ""
+
+
+def _structured_fact_chunks(
+    doc_id: str,
+    version_id: str,
+    ie_assets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, asset in enumerate(ie_assets, start=1):
+        text = _asset_fact_text(asset)
+        if not text:
+            continue
+        page_no = int(asset.get("source_page") or 0)
+        if page_no <= 0:
+            continue
+        signature = f"{page_no}|{text}"
+        if signature in seen:
+            continue
+        seen.add(signature)
+        data = asset.get("data_json") if isinstance(asset.get("data_json"), dict) else {}
+        clause_no = str((data or {}).get("clause_no") or "").strip()
+        out.append(
+            {
+                "chunk_id": f"fact_{idx}",
+                "doc_id": doc_id,
+                "version_id": version_id,
+                "chapter_id": "structured_facts",
+                "page_start": page_no,
+                "page_end": page_no,
+                "text": text,
+                "block_ids": [],
+                "source_type": "structured_fact",
+                "page_type": "structured",
+                "clause_id": clause_no or None,
+            }
+        )
+    return out
+
+
 def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, Any]:
     doc_id = str(job["doc_id"])
     version_id = str(job["version_id"])
@@ -262,6 +380,16 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
         runtime_config=runtime_config,
     )
 
+    page_rows = _page_rows_from_mineru(mineru_result=mineru_result, doc_id=doc_id)
+    doc_pages_upserted = 0
+    if rt.doc_pages_repo is not None and page_rows:
+        upsert_fn = getattr(rt.doc_pages_repo, "upsert_pages", None)
+        if callable(upsert_fn):
+            try:
+                doc_pages_upserted = int(upsert_fn(doc_id=doc_id, version_id=version_id, pages=page_rows) or 0)
+            except TypeError:
+                doc_pages_upserted = int(upsert_fn(doc_id, version_id, page_rows) or 0)
+
     sparse_sidecar = _export_sparse_sidecar_pages(mineru_result=mineru_result, doc_id=doc_id)
     mineru_json_key = f"mineru/{doc_id}/{version_id}/mineru.pages.json"
     mineru_md_key = f"mineru/{doc_id}/{version_id}/mineru.pages.md"
@@ -285,10 +413,13 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
         vl_table_repairs_by_table_id=table_vl_repairs,
     )
 
+    doc_type = str(job.get("doc_type") or (result.get("classification") or {}).get("doc_type") or "规范规程")
     ie_engine = str(runtime_config.get("ie_engine") or "").strip().lower()
     if not ie_engine:
-        ie_engine = "langextract" if str(os.getenv("ENABLE_LANGEXTRACT", "0")).strip() in {"1", "true", "True"} else "custom"
+        langextract_enabled = str(os.getenv("ENABLE_LANGEXTRACT", "0")).strip() in {"1", "true", "True"}
+        ie_engine = "hybrid" if langextract_enabled and _doc_type_allowed_for_langextract(doc_type) else "custom"
     ie_assets = _extract_assets_from_normalized_pages(result.get("normalized_blocks") or [], ie_engine=ie_engine)
+    structured_fact_chunks = _structured_fact_chunks(doc_id=doc_id, version_id=version_id, ie_assets=ie_assets)
 
     assets_written = 0
     if rt.asset_repo is not None and ie_assets:
@@ -300,15 +431,16 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
 
     entity_index = rt.entity_index or _EntityIndex()
     upserted = 0
-    doc_type = str(job.get("doc_type") or (result.get("classification") or {}).get("doc_type") or "规范规程")
 
     # Build per-page page_type map from table_struct results
     table_struct = result.get("table_struct") or {}
     _power_pages = {int(t.get("page_no") or 0) for t in table_struct.get("power_param_table", [])}
     _device_pages = {int(t.get("page_no") or 0) for t in table_struct.get("device_inventory_table", [])}
     _qual_pages = {int(t.get("page_no") or 0) for t in table_struct.get("qualification_table", [])}
+    index_chunks = list(result.get("chunks") or [])
+    index_chunks.extend(structured_fact_chunks)
 
-    for chunk in result["chunks"]:
+    for chunk in index_chunks:
         chunk_for_payload = {
             **chunk,
             "doc_name": object_key.split("/")[-1],
@@ -323,6 +455,8 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
             page_type = "device_inventory_table"
         elif page_start in _qual_pages:
             page_type = "qualification_table"
+        elif str(chunk.get("source_type") or "").strip() == "structured_fact":
+            page_type = "structured"
         elif str(chunk.get("source_type") or "").strip() in {"table_row", "cross_page_table_row", "table_raw", "table_summary"}:
             page_type = "table"
         else:
@@ -343,10 +477,12 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
         upserted += 1
 
     summary = {
-        "chunks": len(result["chunks"]),
+        "chunks": len(index_chunks),
         "upserted": upserted,
         "assets_extracted": len(ie_assets),
         "assets_written": assets_written,
+        "structured_fact_chunks": len(structured_fact_chunks),
+        "doc_pages_upserted": doc_pages_upserted,
         "quality_gate": result.get("quality_gate"),
         "classification": result.get("classification"),
         "table_struct_counts": {
@@ -385,7 +521,7 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
             "blocks": len(result.get("normalized_blocks", [])),
             "tables": len(result.get("normalized_tables", [])),
             "chapters": len(result.get("chapters", [])),
-            "chunks": len(result.get("chunks", [])),
+            "chunks": len(index_chunks),
         },
         "chunk_filter_stats": result.get("chunk_filter_stats") or {},
         "ie_engine": ie_engine,

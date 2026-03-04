@@ -368,6 +368,73 @@ def _extract_assets_langextract(text: str, page_no: int) -> list[dict[str, Any]]
     return assets
 
 
+def _asset_identity(asset: dict[str, Any]) -> str:
+    asset_type = str(asset.get("asset_type") or "").strip().lower()
+    page_no = int(asset.get("source_page") or 0)
+    data = asset.get("data_json") if isinstance(asset.get("data_json"), dict) else {}
+    if not isinstance(data, dict):
+        data = {}
+    if asset_type == "person":
+        core = str(data.get("name") or "").strip()
+    elif asset_type == "qualification":
+        core = str(data.get("certificate") or "").strip()
+    elif asset_type == "standard":
+        core = str(data.get("standard_name") or "").strip()
+    else:
+        core = str(data.get("project_name") or "").strip()
+    return f"{asset_type}|{page_no}|{core}"
+
+
+def _pick_text(primary: str, secondary: str) -> str:
+    p = str(primary or "").strip()
+    s = str(secondary or "").strip()
+    if not p:
+        return s
+    if not s:
+        return p
+    return p if len(p) >= len(s) else s
+
+
+def _merge_asset(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(primary)
+    p_data = merged.get("data_json") if isinstance(merged.get("data_json"), dict) else {}
+    s_data = secondary.get("data_json") if isinstance(secondary.get("data_json"), dict) else {}
+    data = dict(p_data)
+    for key, value in s_data.items():
+        current = data.get(key)
+        if current in (None, "", [], {}):
+            data[key] = value
+    # Keep validation traces from langextract when available.
+    validation = list(data.get("validation") or [])
+    for item in list(s_data.get("validation") or []):
+        if item not in validation:
+            validation.append(item)
+    if validation:
+        data["validation"] = validation
+    data["extract_engine"] = "hybrid"
+    merged["data_json"] = data
+    merged["source_excerpt"] = _pick_text(merged.get("source_excerpt"), secondary.get("source_excerpt"))
+    merged["extract_engine"] = "hybrid"
+    return merged
+
+
+def _merge_assets_hybrid(custom_assets: list[dict[str, Any]], lang_assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in custom_assets:
+        key = _asset_identity(item)
+        merged[key] = {**item, "extract_engine": "custom"}
+        order.append(key)
+    for item in lang_assets:
+        key = _asset_identity(item)
+        if key in merged:
+            merged[key] = _merge_asset(merged[key], item)
+            continue
+        merged[key] = {**item, "extract_engine": "langextract"}
+        order.append(key)
+    return [merged[k] for k in order]
+
+
 def extract_assets_from_chapter(
     text: str,
     page_no: int,
@@ -375,7 +442,13 @@ def extract_assets_from_chapter(
 ) -> list[dict[str, Any]]:
     selected_engine = str(engine or "").strip().lower()
     if not selected_engine:
-        selected_engine = "langextract" if os.getenv("ENABLE_LANGEXTRACT", "0").strip() in {"1", "true", "True"} else "custom"
+        selected_engine = "hybrid" if os.getenv("ENABLE_LANGEXTRACT", "0").strip() in {"1", "true", "True"} else "custom"
+    if selected_engine == "hybrid":
+        custom_assets = _extract_assets_custom(text=text, page_no=page_no)
+        lang_assets = _extract_assets_langextract(text=text, page_no=page_no)
+        if custom_assets or lang_assets:
+            return _merge_assets_hybrid(custom_assets=custom_assets, lang_assets=lang_assets)
+        return []
     if selected_engine == "langextract":
         lang_assets = _extract_assets_langextract(text=text, page_no=page_no)
         if lang_assets:

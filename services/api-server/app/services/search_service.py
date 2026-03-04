@@ -29,6 +29,9 @@ class SearchRepo(Protocol):
     def keyword_search(self, query_text: str, filter_json: dict[str, Any] | None, limit: int = 20) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def fetch_by_filter(self, filter_json: dict[str, Any] | None, limit: int = 20) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
     def delete_by_version(self, version_id: str) -> None:
         raise NotImplementedError
 
@@ -61,6 +64,17 @@ class InMemoryQdrantRepo:
             scored.append((score, {"id": r.get("id"), "score": score, "payload": payload}))
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:limit]]
+
+    def fetch_by_filter(self, filter_json: dict[str, Any] | None, limit: int = 20) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for r in self._records:
+            payload = r.get("payload") or {}
+            if not _match_filter(payload, filter_json):
+                continue
+            out.append({"id": r.get("id"), "score": r.get("score"), "payload": payload})
+            if len(out) >= limit:
+                break
+        return out
 
     def delete_by_version(self, version_id: str) -> None:
         self._records = [r for r in self._records if str((r.get("payload") or {}).get("version_id") or "") != version_id]
@@ -238,6 +252,19 @@ class QdrantHttpRepo:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:limit]]
 
+    def fetch_by_filter(self, filter_json: dict[str, Any] | None, limit: int = 20) -> list[dict[str, Any]]:
+        points = self._scroll_payloads(filter_json=filter_json, limit=max(1, int(limit)))
+        hits: list[dict[str, Any]] = []
+        for p in points[: max(1, int(limit))]:
+            hits.append(
+                {
+                    "id": p.get("id"),
+                    "score": p.get("score"),
+                    "payload": p.get("payload", {}),
+                }
+            )
+        return hits
+
     def delete_by_version(self, version_id: str) -> None:
         if not version_id:
             return
@@ -253,9 +280,20 @@ class QdrantHttpRepo:
 
 
 class SimpleEmbeddingClient:
-    def __init__(self, dim: int = 1024) -> None:
-        self.dim = dim
+    def __init__(self, dim: int | None = None) -> None:
+        env_dim = str(os.getenv("EMBEDDING_DIM") or "").strip()
+        if dim is not None:
+            self.dim = int(dim)
+            self._stub_dim_pinned = True
+        elif env_dim:
+            self.dim = int(env_dim)
+            self._stub_dim_pinned = True
+        else:
+            self.dim = 1024
+            self._stub_dim_pinned = False
         self.timeout_s = float(os.getenv("EMBEDDING_HTTP_TIMEOUT_S", "15"))
+        self._cached_remote_stub_dim: int | None = None
+        self._remote_stub_dim_probed = False
 
     def _normalize_token(self, raw: str) -> str:
         token = str(raw or "").strip()
@@ -291,8 +329,58 @@ class SimpleEmbeddingClient:
         app_env = str(os.getenv("APP_ENV", "development")).strip().lower()
         return app_env in {"prod", "production"}
 
+    def _resolve_remote_stub_dim(self) -> int | None:
+        endpoint = str(os.getenv("VECTORDB_ENDPOINT") or "").strip()
+        if not endpoint:
+            return None
+        if not endpoint.startswith("http"):
+            endpoint = f"http://{endpoint}"
+        collection = str(os.getenv("QDRANT_COLLECTION") or "chunks_v1").strip() or "chunks_v1"
+        vector_name = str(os.getenv("QDRANT_VECTOR_NAME") or "text_embedding").strip() or "text_embedding"
+        try:
+            resp = requests.get(
+                f"{endpoint.rstrip('/')}/collections/{collection}",
+                timeout=min(self.timeout_s, 5.0),
+            )
+            resp.raise_for_status()
+            raw = resp.json()
+            body = raw if isinstance(raw, dict) else {}
+            vectors = ((((body or {}).get("result") or {}).get("config") or {}).get("params") or {}).get("vectors")
+            if isinstance(vectors, dict):
+                named = vectors.get(vector_name)
+                if isinstance(named, dict):
+                    size = int(named.get("size") or 0)
+                    if size > 0:
+                        return size
+                if "size" in vectors:
+                    size = int(vectors.get("size") or 0)
+                    if size > 0:
+                        return size
+                for value in vectors.values():
+                    if isinstance(value, dict) and int(value.get("size") or 0) > 0:
+                        return int(value.get("size"))
+            return None
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("embedding_stub_dim_resolve_failed error=%s", str(exc))
+            return None
+
+    def _stub_dim(self) -> int:
+        if self._stub_dim_pinned:
+            return max(1, int(self.dim))
+        if self._cached_remote_stub_dim is not None:
+            return self._cached_remote_stub_dim
+        if self._remote_stub_dim_probed:
+            return max(1, int(self.dim))
+        self._remote_stub_dim_probed = True
+        remote_dim = self._resolve_remote_stub_dim()
+        if remote_dim and remote_dim > 0:
+            self._cached_remote_stub_dim = int(remote_dim)
+            return self._cached_remote_stub_dim
+        return max(1, int(self.dim))
+
     def _stub(self, text: str) -> list[float]:
-        values = [0.0] * self.dim
+        dim = self._stub_dim()
+        values = [0.0] * dim
         normalized = str(text or "").lower()
         tokens: list[str] = []
         tokens.extend(re.findall(r"\d+(?:\.\d+)+", normalized))
@@ -303,7 +391,7 @@ class SimpleEmbeddingClient:
 
         for token in tokens:
             digest = hashlib.sha256(token.encode("utf-8")).digest()
-            idx = int.from_bytes(digest[:4], "big") % self.dim
+            idx = int.from_bytes(digest[:4], "big") % dim
             sign = 1.0 if (digest[4] & 1) == 0 else -1.0
             weight = 1.0 + min(len(token), 8) / 8.0
             values[idx] += sign * weight
@@ -576,7 +664,17 @@ def _extract_query_terms(query: str) -> list[str]:
     terms: list[str] = []
     terms.extend(re.findall(r"\d+(?:\.\d+)+", q))
     terms.extend(re.findall(r"[a-z0-9]{2,}", q))
-    terms.extend(re.findall(r"[\u4e00-\u9fff]{2,8}", q))
+    cn_runs = re.findall(r"[\u4e00-\u9fff]{2,24}", q)
+    terms.extend(cn_runs)
+    for run in cn_runs:
+        # Add short Chinese n-grams so natural queries (without clause id)
+        # can still match by core words such as “绝缘油/验收/保管”.
+        run_len = len(run)
+        for n in (2, 3, 4):
+            if run_len < n:
+                continue
+            for i in range(0, run_len - n + 1):
+                terms.append(run[i : i + n])
     # Deduplicate while preserving order.
     out: list[str] = []
     seen: set[str] = set()
@@ -632,6 +730,12 @@ def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[
                 exact += 4.0
             if "table" in page_type:
                 exact += 2.0
+        source_type = str(payload.get("source_type") or "").strip().lower()
+        route = str(payload.get("route") or "").strip().lower()
+        if source_type == "structured_fact":
+            exact += 3.0
+        if route == "structured":
+            exact += 1.5
 
         base = float((hit or {}).get("score") or 0.0)
         final_score = lexical * 5.0 + exact + base * 0.05 - idx * 1e-4
@@ -673,6 +777,62 @@ def _merge_filters(
     if isinstance(extra_filter, dict):
         must.extend(list(extra_filter.get("must") or []))
     return {"must": must} if must else None
+
+
+def _has_doc_scope_filter(filter_json: dict[str, Any] | None) -> bool:
+    if not isinstance(filter_json, dict):
+        return False
+    for cond in list(filter_json.get("must") or []):
+        key = str(cond.get("key") or "").strip()
+        if key not in {"doc_id", "version_id"}:
+            continue
+        match = cond.get("match") or {}
+        if match.get("value") is not None:
+            return True
+        if isinstance(match.get("any"), list) and match.get("any"):
+            return True
+    return False
+
+
+def _filter_keyword_fallback_hits(
+    question: str,
+    repo: SearchRepo,
+    filter_json: dict[str, Any] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    terms = _extract_query_terms(question)
+    if not terms:
+        return []
+    scan_limit = max(limit * 20, int(os.getenv("HYBRID_FILTER_FALLBACK_SCAN_MAX", "800")))
+    base_hits = _fetch_hits_by_filter(
+        repo=repo,
+        filter_json=filter_json,
+        limit=scan_limit,
+        fallback_query=question,
+    )
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for hit in base_hits:
+        payload = (hit or {}).get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        text = _payload_search_text(payload)
+        lexical = _keyword_score(text=text, terms=terms)
+        if lexical <= 0:
+            continue
+        boosted = lexical * 5.0 + float((hit or {}).get("score") or 0.0) * 0.05
+        payload.setdefault("route", "filter_keyword")
+        scored.append(
+            (
+                boosted,
+                {
+                    "id": hit.get("id"),
+                    "score": boosted,
+                    "payload": payload,
+                },
+            )
+        )
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item for _, item in scored[: max(1, int(limit))]]
 
 
 def _remove_clause_constraints(filter_json: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -816,6 +976,26 @@ def _to_citation(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fetch_hits_by_filter(
+    repo: SearchRepo,
+    filter_json: dict[str, Any] | None,
+    limit: int,
+    fallback_query: str = "",
+) -> list[dict[str, Any]]:
+    fetch_fn = getattr(repo, "fetch_by_filter", None)
+    if callable(fetch_fn):
+        try:
+            return fetch_fn(filter_json=filter_json, limit=limit) or []
+        except Exception:  # noqa: BLE001
+            pass
+    if fallback_query:
+        try:
+            return repo.keyword_search(query_text=fallback_query, filter_json=filter_json, limit=limit)
+        except Exception:  # noqa: BLE001
+            return []
+    return []
+
+
 def _attach_explanation_siblings(
     citations: list[dict[str, Any]],
     repo: SearchRepo,
@@ -872,10 +1052,12 @@ def _attach_explanation_siblings(
                 ]
             },
         )
-        try:
-            sibling_hits = repo.keyword_search(query_text=clause_id, filter_json=sibling_filter, limit=per_clause_limit)
-        except Exception:  # noqa: BLE001
-            sibling_hits = []
+        sibling_hits = _fetch_hits_by_filter(
+            repo=repo,
+            filter_json=sibling_filter,
+            limit=per_clause_limit,
+            fallback_query=clause_id,
+        )
 
         for hit in sibling_hits:
             payload = (hit or {}).get("payload") or {}
@@ -898,7 +1080,7 @@ def _allow_keyword_search(repo: SearchRepo) -> bool:
     if not _env_enabled("HYBRID_KEYWORD_ENABLED", default=True):
         return False
     if isinstance(repo, QdrantHttpRepo):
-        return _env_enabled("ENABLE_QDRANT_SCROLL_KEYWORD", default=False)
+        return _env_enabled("ENABLE_QDRANT_SCROLL_KEYWORD", default=True)
     return True
 
 
@@ -1110,8 +1292,26 @@ def hybrid_search(
             payload.setdefault("route", "dense")
 
     route_lists: list[list[dict[str, Any]]] = [vector_hits]
-    route_counts: dict[str, int] = {"dense": len(vector_hits), "keyword": 0}
+    route_counts: dict[str, int] = {"dense": len(vector_hits), "keyword": 0, "filter_keyword": 0}
     degraded_routes: dict[str, str] = {}
+
+    # Doc-scoped fallback: when vector route misses (e.g., embedding mismatch),
+    # scan selected document points and rank by lexical overlap.
+    filter_keyword_hits: list[dict[str, Any]] = []
+    if not vector_hits and _has_doc_scope_filter(filter_json):
+        try:
+            filter_keyword_hits = _filter_keyword_fallback_hits(
+                question=question,
+                repo=repo,
+                filter_json=filter_json,
+                limit=max(keyword_top_k, top_k),
+            )
+        except Exception as exc:  # noqa: BLE001
+            degraded_routes["filter_keyword"] = str(exc)
+            filter_keyword_hits = []
+    if filter_keyword_hits:
+        route_lists.append(filter_keyword_hits)
+    route_counts["filter_keyword"] = len(filter_keyword_hits)
 
     sparse_candidates: list[dict[str, Any]] = []
     if _env_enabled("ENABLE_PG_BM25", default=True):

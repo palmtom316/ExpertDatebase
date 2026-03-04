@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any
 
 from sqlalchemy import create_engine, text
+
+_log = logging.getLogger(__name__)
 
 
 def _sanitize_query_text(query_text: str) -> str:
@@ -29,6 +32,54 @@ class PgBM25SparseRetriever:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = str(database_url or os.getenv("DATABASE_URL") or "").strip()
         self._engine = create_engine(self.database_url, pool_pre_ping=True) if self.database_url else None
+        self._schema_ready = False
+
+    def _ensure_schema(self) -> None:
+        if self._schema_ready or not self._engine:
+            return
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS doc_pages (
+                      id SERIAL PRIMARY KEY,
+                      doc_id VARCHAR(64) NOT NULL,
+                      version_id VARCHAR(64) NOT NULL,
+                      page_no INTEGER NOT NULL,
+                      text TEXT NOT NULL DEFAULT '',
+                      source_path VARCHAR(512),
+                      tsv tsvector,
+                      created_at TIMESTAMP NOT NULL DEFAULT now(),
+                      UNIQUE (doc_id, page_no)
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_doc_pages_tsv ON doc_pages USING gin(tsv)"))
+            conn.execute(
+                text(
+                    """
+                    CREATE OR REPLACE FUNCTION doc_pages_tsv_update() RETURNS trigger AS $$
+                    BEGIN
+                        NEW.tsv := to_tsvector('simple', COALESCE(NEW.text, ''));
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql;
+                    """
+                )
+            )
+            conn.execute(text("DROP TRIGGER IF EXISTS doc_pages_tsv_trigger ON doc_pages"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TRIGGER doc_pages_tsv_trigger
+                    BEFORE INSERT OR UPDATE OF text
+                    ON doc_pages
+                    FOR EACH ROW EXECUTE FUNCTION doc_pages_tsv_update();
+                    """
+                )
+            )
+        self._schema_ready = True
 
     def search(
         self,
@@ -37,6 +88,11 @@ class PgBM25SparseRetriever:
         filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         if not self._engine:
+            return []
+        try:
+            self._ensure_schema()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("pg_bm25_schema_init_failed error=%s", str(exc))
             return []
         q = _sanitize_query_text(query_text)
         if not q:
@@ -72,8 +128,12 @@ class PgBM25SparseRetriever:
         if selected_doc_id:
             params["doc_id"] = selected_doc_id
 
-        with self._engine.begin() as conn:
-            rows = conn.execute(sql, params).mappings().all()
+        try:
+            with self._engine.begin() as conn:
+                rows = conn.execute(sql, params).mappings().all()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("pg_bm25_query_failed error=%s", str(exc))
+            return []
 
         out: list[dict[str, Any]] = []
         for row in rows:
@@ -88,4 +148,3 @@ class PgBM25SparseRetriever:
                 }
             )
         return [item for item in out if item["doc_id"] and item["page_no"] > 0]
-
