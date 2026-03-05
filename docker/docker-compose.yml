@@ -33,6 +33,14 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
       - OPENAI_TEMPERATURE=${OPENAI_TEMPERATURE:-0.2}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-auto}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      - RERANK_PROVIDER=${RERANK_PROVIDER:-auto}
+      - RERANK_API_KEY=${RERANK_API_KEY:-}
+      - RERANK_MODEL=${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      - RERANK_BASE_URL=${RERANK_BASE_URL:-https://api.openai.com/v1}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-5-sonnet-latest}
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com/v1}
@@ -94,6 +102,13 @@ services:
       - VL_MODEL=${VL_MODEL:-gpt-4o-mini}
       - VL_BASE_URL=${VL_BASE_URL:-https://api.openai.com/v1}
       - VL_HTTP_TIMEOUT_S=${VL_HTTP_TIMEOUT_S:-30}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-auto}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - EMBEDDING_FALLBACK_STRICT=${EMBEDDING_FALLBACK_STRICT:-0}
     volumes:
       - ../shared/configs:/configs:ro
       - objectdata:/data/objects
