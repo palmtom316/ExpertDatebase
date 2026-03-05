@@ -1,0 +1,173 @@
+# oh-my-codex top-level settings (must be before any [table])
+notify = ["node", "/usr/local/lib/node_modules/oh-my-codex/scripts/notify-hook.js"]
+model_reasoning_effort = "high"
+developer_instructions = "You have oh-my-codex installed. Use /prompts:architect, /prompts:executor, /prompts:planner for specialized agent roles. Workflow skills via $name: $ralph, $autopilot, $plan. AGENTS.md is your orchestration brain."
+
+[features]
+multi_agent = true
+child_agents_md = true
+
+# ============================================================
+# oh-my-codex (OMX) Configuration
+# Managed by omx setup - manual edits preserved on next setup
+# ============================================================
+
+# OMX State Management MCP Server
+[mcp_servers.omx_state]
+command = "node"
+args = ["/usr/local/lib/node_modules/oh-my-codex/dist/mcp/state-server.js"]
+enabled = true
+startup_timeout_sec = 5
+
+# OMX Project Memory MCP Server
+[mcp_servers.omx_memory]
+command = "node"
+args = ["/usr/local/lib/node_modules/oh-my-codex/dist/mcp/memory-server.js"]
+enabled = true
+startup_timeout_sec = 5
+
+# OMX Code Intelligence MCP Server (LSP diagnostics, AST search)
+[mcp_servers.omx_code_intel]
+command = "node"
+args = ["/usr/local/lib/node_modules/oh-my-codex/dist/mcp/code-intel-server.js"]
+enabled = true
+startup_timeout_sec = 10
+
+# OMX Trace MCP Server (agent flow timeline & statistics)
+[mcp_servers.omx_trace]
+command = "node"
+args = ["/usr/local/lib/node_modules/oh-my-codex/dist/mcp/trace-server.js"]
+enabled = true
+startup_timeout_sec = 5
+
+# OMX Team MCP Server (team job lifecycle: start, status, wait, cleanup)
+[mcp_servers.omx_team_run]
+command = "node"
+args = ["/usr/local/lib/node_modules/oh-my-codex/dist/mcp/team-server.js"]
+enabled = true
+startup_timeout_sec = 5
+
+# OMX Native Agent Roles (Codex multi-agent)
+
+[agents.explore]
+description = "Fast codebase search and file/symbol mapping"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/explore.toml"
+
+[agents.analyst]
+description = "Requirements clarity, acceptance criteria, hidden constraints"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/analyst.toml"
+
+[agents.planner]
+description = "Task sequencing, execution plans, risk flags"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/planner.toml"
+
+[agents.architect]
+description = "System design, boundaries, interfaces, long-horizon tradeoffs"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/architect.toml"
+
+[agents.debugger]
+description = "Root-cause analysis, regression isolation, failure diagnosis"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/debugger.toml"
+
+[agents.executor]
+description = "Code implementation, refactoring, feature work"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/executor.toml"
+
+[agents.verifier]
+description = "Completion evidence, claim validation, test adequacy"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/verifier.toml"
+
+[agents."style-reviewer"]
+description = "Formatting, naming, idioms, lint conventions"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/style-reviewer.toml"
+
+[agents."quality-reviewer"]
+description = "Logic defects, maintainability, anti-patterns"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/quality-reviewer.toml"
+
+[agents."api-reviewer"]
+description = "API contracts, versioning, backward compatibility"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/api-reviewer.toml"
+
+[agents."security-reviewer"]
+description = "Vulnerabilities, trust boundaries, authn/authz"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/security-reviewer.toml"
+
+[agents."performance-reviewer"]
+description = "Hotspots, complexity, memory/latency optimization"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/performance-reviewer.toml"
+
+[agents."code-reviewer"]
+description = "Comprehensive review across all concerns"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/code-reviewer.toml"
+
+[agents."dependency-expert"]
+description = "External SDK/API/package evaluation"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/dependency-expert.toml"
+
+[agents."test-engineer"]
+description = "Test strategy, coverage, flaky-test hardening"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/test-engineer.toml"
+
+[agents."quality-strategist"]
+description = "Quality strategy, release readiness, risk assessment"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/quality-strategist.toml"
+
+[agents."build-fixer"]
+description = "Build/toolchain/type failures resolution"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/build-fixer.toml"
+
+[agents.designer]
+description = "UX/UI architecture, interaction design"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/designer.toml"
+
+[agents.writer]
+description = "Documentation, migration notes, user guidance"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/writer.toml"
+
+[agents."qa-tester"]
+description = "Interactive CLI/service runtime validation"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/qa-tester.toml"
+
+[agents."git-master"]
+description = "Commit strategy, history hygiene, rebasing"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/git-master.toml"
+
+[agents."code-simplifier"]
+description = "Simplifies recently modified code for clarity and consistency without changing behavior"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/code-simplifier.toml"
+
+[agents.researcher]
+description = "External documentation and reference research"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/researcher.toml"
+
+[agents."product-manager"]
+description = "Problem framing, personas/JTBD, PRDs"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/product-manager.toml"
+
+[agents."ux-researcher"]
+description = "Heuristic audits, usability, accessibility"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/ux-researcher.toml"
+
+[agents."information-architect"]
+description = "Taxonomy, navigation, findability"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/information-architect.toml"
+
+[agents."product-analyst"]
+description = "Product metrics, funnel analysis, experiments"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/product-analyst.toml"
+
+[agents.critic]
+description = "Plan/design critical challenge and review"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/critic.toml"
+
+[agents.vision]
+description = "Image/screenshot/diagram analysis"
+config_file = "/Users/palmtom/Projects/ExpertDatebase/.omx/agents/vision.toml"
+
+# OMX TUI StatusLine (Codex CLI v0.101.0+)
+[tui]
+status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit"]
+
+# ============================================================
+# End oh-my-codex
