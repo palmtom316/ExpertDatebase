@@ -733,6 +733,10 @@ _CN_STOP_TERMS = {
     "是否",
 }
 _CN_STOP_CHARS = set("的了吗呢吧啊呀和及并且或与在对将把为于被就都与其")
+_STANDARD_QUERY_PAT = re.compile(
+    r"(?<![A-Za-z0-9])((?:GB|DL/T|DL|NB/T|IEC|ISO)\s*[-A-Z]*\s*\d{2,6}(?:-\d{4})?)(?![A-Za-z0-9])",
+    flags=re.IGNORECASE,
+)
 
 
 def _clean_query_for_terms(query: str) -> str:
@@ -808,6 +812,22 @@ def _extract_query_terms(query: str) -> list[str]:
     return out
 
 
+def _extract_standard_tokens(query: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _STANDARD_QUERY_PAT.finditer(str(query or "")):
+        raw = str(m.group(1) or "").strip().upper()
+        if not raw:
+            continue
+        compact = re.sub(r"\s+", "", raw)
+        for token in (raw, compact):
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            out.append(token)
+    return out
+
+
 def _keyword_score(text: str, terms: list[str]) -> float:
     if not text or not terms:
         return 0.0
@@ -825,7 +845,9 @@ def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[
     if len(hits) <= 1:
         return hits
     terms = _extract_query_terms(question)
-    if not terms:
+    standard_tokens = _extract_standard_tokens(question)
+    clause_tokens = extract_clause_ids(question)
+    if not terms and not standard_tokens and not clause_tokens:
         return hits
 
     question_norm = re.sub(r"\s+", "", str(question or "").lower())
@@ -837,14 +859,38 @@ def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[
         payload = (hit or {}).get("payload") or {}
         text = _payload_search_text(payload)
         text_norm = re.sub(r"\s+", "", text.lower())
+        doc_name_upper = str(payload.get("doc_name") or "").strip().upper()
+        standard_no_upper = str(payload.get("standard_no") or "").strip().upper()
+        clause_payload = str(payload.get("clause_id") or payload.get("clause_no") or payload.get("article_no") or "").strip()
 
-        lexical = _keyword_score(text, terms)
+        lexical = _keyword_score(text, terms) if terms else 0.0
         exact = 0.0
         if question_norm and len(question_norm) <= 32 and question_norm in text_norm:
             exact += 6.0
         for term in terms:
             if len(term) >= 3 and term in text:
                 exact += 0.3
+
+        for standard in standard_tokens:
+            if standard_no_upper == standard:
+                exact += 8.0
+            elif standard and standard in standard_no_upper:
+                exact += 5.0
+            elif standard and standard in doc_name_upper:
+                exact += 4.0
+            elif standard and standard.lower() in text:
+                exact += 2.0
+
+        for clause in clause_tokens:
+            if not clause:
+                continue
+            if clause_payload == clause:
+                exact += 6.0
+            elif clause_payload and (clause_payload.startswith(f"{clause}.") or clause.startswith(f"{clause_payload}.")):
+                exact += 3.0
+            elif clause in text:
+                exact += 1.5
+
         if table_query:
             source_type = str(payload.get("source_type") or "").strip().lower()
             page_type = str(payload.get("page_type") or "").strip().lower()
@@ -858,12 +904,18 @@ def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[
             exact += 3.0
         if route == "structured":
             exact += 1.5
+        if route == "keyword":
+            exact += 1.0
+        if route == "filter_keyword":
+            exact += 1.2
+        if route == "sparse":
+            exact += 0.8
         if listing_query and source_type == "section_summary":
             # Listing-style questions should prioritize concrete clause body.
             exact -= 1.2
 
         base = float((hit or {}).get("score") or 0.0)
-        final_score = lexical * 5.0 + exact + base * 0.05 - idx * 1e-4
+        final_score = lexical * 5.0 + exact + base * 0.03 - idx * 1e-4
         scored.append((final_score, hit))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -1423,11 +1475,11 @@ def hybrid_search(
     table_query = _is_table_query(question)
     table_sparse_enabled = table_query and _env_enabled("HYBRID_TABLE_QUERY_SPARSE_FILTER", default=False)
     table_sparse_filter = _merge_filters(filter_json, _table_query_extra_filter(table_sparse_enabled))
-    vector_top_k = max(top_k, int(os.getenv("HYBRID_VECTOR_TOP_K", "24")))
-    keyword_top_k = max(4, int(os.getenv("HYBRID_KEYWORD_TOP_K", "8")))
+    vector_top_k = max(top_k, int(os.getenv("HYBRID_VECTOR_TOP_K", "48")))
+    keyword_top_k = max(4, int(os.getenv("HYBRID_KEYWORD_TOP_K", "24")))
     if _is_listing_query(question):
-        keyword_top_k = max(keyword_top_k, int(os.getenv("HYBRID_KEYWORD_TOP_K_LISTING", "48")))
-    fused_limit = max(top_k * 2, int(os.getenv("HYBRID_FUSED_TOP_K", "40")))
+        keyword_top_k = max(keyword_top_k, int(os.getenv("HYBRID_KEYWORD_TOP_K_LISTING", "64")))
+    fused_limit = max(top_k * 3, int(os.getenv("HYBRID_FUSED_TOP_K", "80")))
     sparse_top_k = max(top_k, int(os.getenv("HYBRID_SPARSE_TOP_K", "24")))
     structured_top_k = max(top_k, int(os.getenv("HYBRID_STRUCTURED_TOP_K", "24")))
 
@@ -1496,7 +1548,7 @@ def hybrid_search(
 
     keyword_hits: list[dict[str, Any]] = []
     allow_keyword = _allow_keyword_search(repo)
-    keyword_fallback_only = _env_enabled("HYBRID_KEYWORD_FALLBACK_ONLY", default=True)
+    keyword_fallback_only = _env_enabled("HYBRID_KEYWORD_FALLBACK_ONLY", default=False)
     should_run_keyword = allow_keyword and (not keyword_fallback_only or not sparse_hits)
     if should_run_keyword:
         try:

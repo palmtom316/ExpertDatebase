@@ -281,6 +281,62 @@ class TestHybridSearchFilters(unittest.TestCase):
             os.environ.clear()
             os.environ.update(old)
 
+    def test_hybrid_search_post_keyword_boost_prioritizes_standard_exact_match(self) -> None:
+        class _RepoStandardBoost:
+            def search(self, query_vector, filter_json=None, limit=5):
+                return [
+                    {
+                        "id": "high-base-generic",
+                        "score": 0.98,
+                        "payload": {
+                            "doc_name": "generic.pdf",
+                            "doc_id": "d_generic",
+                            "version_id": "v_generic",
+                            "page_start": 6,
+                            "page_end": 6,
+                            "excerpt": "电气装置安装工程相关说明。",
+                            "chunk_text": "电气装置安装工程相关说明。",
+                        },
+                    },
+                    {
+                        "id": "standard-exact",
+                        "score": 0.70,
+                        "payload": {
+                            "doc_name": "GB 50147-2010 规范.pdf",
+                            "doc_id": "d_std",
+                            "version_id": "v_std",
+                            "page_start": 2,
+                            "page_end": 2,
+                            "excerpt": "本标准为 GB 50147-2010。",
+                            "chunk_text": "本标准为 GB 50147-2010。",
+                            "standard_no": "GB 50147-2010",
+                        },
+                    },
+                ]
+
+            def keyword_search(self, query_text, filter_json=None, limit=20):
+                return []
+
+            def delete_by_version(self, version_id: str):
+                return None
+
+        old = dict(os.environ)
+        os.environ["ENABLE_RERANK"] = "0"
+        os.environ["HYBRID_KEYWORD_ENABLED"] = "0"
+        os.environ["HYBRID_POST_KEYWORD_BOOST"] = "1"
+        try:
+            result = hybrid_search(
+                question="GB 50147-2010 适用范围",
+                repo=_RepoStandardBoost(),
+                entity_index=DummyEntityIndex(),
+                top_k=2,
+            )
+            self.assertEqual(len(result["citations"]), 2)
+            self.assertEqual(result["citations"][0].get("doc_id"), "d_std")
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
     def test_parse_filter_spec_multi_clause_uses_any(self) -> None:
         f, sparse_query, _ = parse_filter_spec("请对比 3.0.1 与 3.0.2 的要求", DummyEntityIndex())
         self.assertIsNotNone(f)

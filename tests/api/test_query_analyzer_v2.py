@@ -31,9 +31,13 @@ def test_query_analyzer_v2_extracts_clause_standard_and_certificate() -> None:
     assert "rel_person_role" in keys
     assert "val_voltage_kv" in keys
     assert "clause_no" in keys
+    assert "standard_no" in keys
     assert "certificate_no" in keys
     clause_filter = next(item for item in must if item["key"] == "clause_no")
     assert "11.4.1" in (clause_filter.get("match") or {}).get("any", [])
+    standard_filter = next(item for item in must if item["key"] == "standard_no")
+    std_any = (standard_filter.get("match") or {}).get("any", [])
+    assert "GB 50147-2010" in std_any or "GB50147-2010" in std_any
     assert "11.4.1" in sparse_query
     assert "GB 50147-2010" in sparse_query
     assert "ZJ-A-2024-009" in sparse_query

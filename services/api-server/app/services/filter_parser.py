@@ -35,6 +35,19 @@ def _dedupe(items: list[str]) -> list[str]:
     return out
 
 
+def _expand_standard_variants(standards: list[str]) -> list[str]:
+    out: list[str] = []
+    for item in standards:
+        raw = str(item or "").strip().upper()
+        if not raw:
+            continue
+        compact = re.sub(r"\s+", "", raw)
+        out.append(raw)
+        if compact and compact != raw:
+            out.append(compact)
+    return _dedupe(out)
+
+
 def parse_amount_to_wan(text: str) -> float | None:
     m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(亿|万|万元)", text)
     if not m:
@@ -113,10 +126,11 @@ def parse_filter_spec(question: str, entity_index: Any) -> tuple[dict[str, Any] 
         sparse_tokens.append("强制性条文")
 
     standard_hits = _dedupe([m.group(1).strip().upper() for m in _STANDARD_PAT.finditer(q)])
-    strict_standard = str(os.getenv("ENABLE_STANDARD_STRICT_FILTER", "0")).strip().lower() in {"1", "true", "yes"}
-    for standard in standard_hits:
-        if strict_standard:
-            must.append({"key": "standard_no", "match": {"value": standard}})
+    standard_values = _expand_standard_variants(standard_hits)
+    strict_standard = str(os.getenv("ENABLE_STANDARD_STRICT_FILTER", "1")).strip().lower() in {"1", "true", "yes"}
+    if strict_standard and standard_values:
+        # Multi-standard query should use ANY semantics to avoid impossible AND constraints.
+        must.append({"key": "standard_no", "match": {"any": standard_values}})
     sparse_tokens.extend(standard_hits)
 
     cert_hits = _dedupe([m.group(1).strip().upper() for m in _CERT_PAT.finditer(q)])
@@ -128,4 +142,3 @@ def parse_filter_spec(question: str, entity_index: Any) -> tuple[dict[str, Any] 
     sparse_query = " ".join(_dedupe([q] + sparse_tokens)).strip()
     dense_query_text = q
     return filter_json, sparse_query, dense_query_text
-
