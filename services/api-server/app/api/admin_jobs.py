@@ -85,7 +85,11 @@ def reprocess(req: ReprocessRequest) -> dict:
     }
     if req.reuse_mineru_artifacts is not None:
         runtime_config["reuse_mineru_artifacts"] = bool(req.reuse_mineru_artifacts)
-    runtime_config = {k: v for k, v in runtime_config.items() if v}
+    runtime_config = {
+        k: v
+        for k, v in runtime_config.items()
+        if v is not None and (bool(v) or (k == "reuse_mineru_artifacts" and isinstance(v, bool)))
+    }
     result = reprocess_version(
         registry=REGISTRY,
         task_queue=TASK_QUEUE,

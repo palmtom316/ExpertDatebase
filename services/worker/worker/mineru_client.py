@@ -58,6 +58,68 @@ class MinerUClient:
             pages.append({"page_no": page_no, "blocks": blocks, "tables": []})
         return {"pages": pages}
 
+    def _page_lines_from_text(self, text: str) -> list[str]:
+        lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+        if not lines:
+            return []
+        # Some PDFs extract as one-char-per-line. Merge first, then split by sentence marks.
+        tiny_ratio = sum(1 for line in lines if len(line) <= 2) / max(1, len(lines))
+        if tiny_ratio >= 0.7 and len(lines) >= 16:
+            merged = "".join(lines)
+            merged = re.sub(r"([。！？；;])", r"\1\n", merged)
+            repaired = [line.strip() for line in merged.splitlines() if line.strip()]
+            if repaired:
+                return repaired
+        return lines
+
+    def _parse_pdf_locally(self, pdf_bytes: bytes) -> dict[str, Any] | None:
+        """Fallback parser when MinerU endpoint is not configured.
+
+        Prefer PDF text extraction over raw bytes decoding so multi-page documents
+        can still produce reasonable page-level blocks in offline/dev mode.
+        """
+        try:
+            from pypdf import PdfReader  # type: ignore
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+        except Exception:  # noqa: BLE001
+            return None
+
+        max_pages = max(0, int(os.getenv("MINERU_LOCAL_MAX_PAGES", "0")))
+        max_lines_per_page = max(20, int(os.getenv("MINERU_LOCAL_MAX_LINES_PER_PAGE", "240")))
+        pages: list[dict[str, Any]] = []
+        for idx, page in enumerate(getattr(reader, "pages", []) or [], start=1):
+            if max_pages > 0 and idx > max_pages:
+                break
+            try:
+                text = ""
+                try:
+                    text = str(page.extract_text(extraction_mode="layout") or "").strip()
+                except Exception:  # noqa: BLE001
+                    text = ""
+                if not text:
+                    text = str(page.extract_text() or "").strip()
+            except Exception:  # noqa: BLE001
+                text = ""
+            if not text:
+                continue
+            lines = self._page_lines_from_text(text)
+            if not lines:
+                lines = [text]
+            lines = lines[:max_lines_per_page]
+            blocks: list[dict[str, Any]] = []
+            for line_idx, line in enumerate(lines, start=1):
+                block_type = "title" if line_idx == 1 and len(line) <= 70 else "paragraph"
+                blocks.append({"type": block_type, "text": line})
+            pages.append({"page_no": idx, "blocks": blocks, "tables": []})
+
+        if not pages:
+            return None
+        return {"pages": pages}
+
     def _extract_text(self, value: Any) -> str:
         if isinstance(value, str):
             return value
@@ -470,6 +532,10 @@ class MinerUClient:
             if isinstance(payload, dict) and isinstance(payload.get("pages"), list):
                 return payload
             return self._to_pages(self._extract_text(payload))
+
+        local_parsed = self._parse_pdf_locally(pdf_bytes)
+        if local_parsed is not None:
+            return local_parsed
 
         text = pdf_bytes.decode("utf-8", errors="ignore").strip()
         if not text:

@@ -10,7 +10,13 @@ if str(API_SERVICE) not in sys.path:
     sys.path.insert(0, str(API_SERVICE))
 
 from app.services.filter_parser import parse_filter_spec  # noqa: E402
-from app.services.search_service import InMemoryQdrantRepo, QdrantHttpRepo, SimpleEmbeddingClient, hybrid_search  # noqa: E402
+from app.services.search_service import (  # noqa: E402
+    InMemoryQdrantRepo,
+    QdrantHttpRepo,
+    RuntimeRerankClient,
+    SimpleEmbeddingClient,
+    hybrid_search,
+)
 
 
 class DummyEntityIndex:
@@ -1031,6 +1037,137 @@ class TestHybridSearchFilters(unittest.TestCase):
             doc_ids = {str(c.get("doc_id") or "") for c in result["citations"]}
             self.assertIn("doc_spec", doc_ids)
             self.assertNotIn("doc_bid", doc_ids)
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
+    def test_hybrid_search_route_plan_disables_sparse_for_precision_query(self) -> None:
+        class _RepoDenseOnly:
+            def search(self, query_vector, filter_json=None, limit=5):
+                return [
+                    {
+                        "id": "dense-hit",
+                        "score": 0.7,
+                        "payload": {
+                            "doc_id": "doc_std",
+                            "version_id": "ver_std",
+                            "doc_name": "GB 50147-2010 标准.pdf",
+                            "standard_no": "GB 50147-2010",
+                            "page_start": 2,
+                            "page_end": 2,
+                            "excerpt": "1.0.2 本标准适用范围。",
+                            "chunk_text": "1.0.2 本标准适用范围。",
+                        },
+                    }
+                ]
+
+            def keyword_search(self, query_text, filter_json=None, limit=20):
+                return []
+
+            def delete_by_version(self, version_id: str):
+                return None
+
+        old = dict(os.environ)
+        os.environ["ENABLE_RERANK"] = "0"
+        os.environ["HYBRID_KEYWORD_ENABLED"] = "0"
+        os.environ["ENABLE_PG_BM25"] = "1"
+        os.environ["HYBRID_ROUTE_GATING_ENABLED"] = "1"
+        os.environ["HYBRID_ROUTE_DISABLE_SPARSE_ON_PRECISION"] = "1"
+        os.environ["HYBRID_POST_KEYWORD_BOOST"] = "0"
+        try:
+            sparse_mock = Mock(return_value=[{"doc_id": "doc_x", "page_no": 1, "excerpt": "x", "score": 1.0}])
+            with patch("app.services.search_service.PgBM25SparseRetriever.search", sparse_mock):
+                result = hybrid_search(
+                    question="GB 50147-2010 适用范围是什么",
+                    repo=_RepoDenseOnly(),
+                    entity_index=DummyEntityIndex(),
+                    top_k=3,
+                )
+            self.assertFalse(sparse_mock.called)
+            self.assertEqual((result.get("debug") or {}).get("route_counts", {}).get("sparse"), 0)
+            self.assertFalse((result.get("debug") or {}).get("route_plan", {}).get("enable_sparse"))
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
+    def test_hybrid_search_route_gate_filters_sparse_hits_by_standard_token(self) -> None:
+        class _RepoDenseOnly:
+            def search(self, query_vector, filter_json=None, limit=5):
+                return []
+
+            def keyword_search(self, query_text, filter_json=None, limit=20):
+                return []
+
+            def delete_by_version(self, version_id: str):
+                return None
+
+        old = dict(os.environ)
+        os.environ["ENABLE_RERANK"] = "0"
+        os.environ["HYBRID_KEYWORD_ENABLED"] = "0"
+        os.environ["ENABLE_PG_BM25"] = "1"
+        os.environ["HYBRID_ROUTE_GATING_ENABLED"] = "1"
+        os.environ["HYBRID_ROUTE_DISABLE_SPARSE_ON_PRECISION"] = "0"
+        os.environ["HYBRID_ROUTE_GATE_PRECISION_HITS"] = "1"
+        os.environ["HYBRID_POST_KEYWORD_BOOST"] = "0"
+        try:
+            with patch(
+                "app.services.search_service.PgBM25SparseRetriever.search",
+                return_value=[
+                    {
+                        "doc_id": "doc_other",
+                        "version_id": "ver_other",
+                        "doc_name": "GB 20148-2010 规范.pdf",
+                        "standard_no": "GB 20148-2010",
+                        "page_no": 1,
+                        "excerpt": "1.0.2 本标准适用范围。",
+                        "score": 9.0,
+                    },
+                    {
+                        "doc_id": "doc_target",
+                        "version_id": "ver_target",
+                        "doc_name": "GB 50147-2010 规范.pdf",
+                        "standard_no": "GB 50147-2010",
+                        "page_no": 2,
+                        "excerpt": "1.0.2 本标准适用范围。",
+                        "score": 8.0,
+                    },
+                ],
+            ), patch("app.services.search_service._low_quality_targets", return_value=(set(), set())):
+                result = hybrid_search(
+                    question="GB 50147-2010 适用范围是什么",
+                    repo=_RepoDenseOnly(),
+                    entity_index=DummyEntityIndex(),
+                    top_k=3,
+                )
+            self.assertGreaterEqual(len(result["citations"]), 1)
+            self.assertEqual(result["citations"][0].get("doc_id"), "doc_target")
+            gate = (result.get("debug") or {}).get("route_gate_counts", {}).get("sparse") or {}
+            self.assertEqual(gate.get("before"), 2)
+            self.assertEqual(gate.get("after"), 1)
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
+    def test_rerank_hit_text_includes_metadata_by_default(self) -> None:
+        old = dict(os.environ)
+        os.environ.pop("RERANK_INCLUDE_METADATA", None)
+        try:
+            text = RuntimeRerankClient()._hit_text(
+                {
+                    "payload": {
+                        "doc_name": "spec.pdf",
+                        "standard_no": "GB 50147-2010",
+                        "clause_id": "3.0.1",
+                        "source_type": "text",
+                        "route": "dense",
+                        "chunk_text": "3.0.1 应满足安装要求。",
+                    }
+                }
+            )
+            self.assertIn("doc_name=spec.pdf", text)
+            self.assertIn("standard_no=GB 50147-2010", text)
+            self.assertIn("clause_id=3.0.1", text)
+            self.assertIn("3.0.1 应满足安装要求。", text)
         finally:
             os.environ.clear()
             os.environ.update(old)

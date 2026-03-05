@@ -1,6 +1,7 @@
 import sys
 import io
 import zipfile
+import types
 from pathlib import Path
 
 import pytest
@@ -305,3 +306,83 @@ def test_to_pages_from_structured_json_supports_pdf_info_para_blocks() -> None:
     assert "第一章 总则" in texts
     assert "本规范适用于高压电器施工" in texts
     assert any("设备 参数" in (t.get("raw_text") or "") or "断路器" in (t.get("raw_text") or "") for t in page.get("tables", []))
+
+
+def test_parse_pdf_without_endpoint_prefers_local_pdf_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Page:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def extract_text(self) -> str:
+            return self._text
+
+    class _Reader:
+        def __init__(self, _buf: io.BytesIO) -> None:
+            self.pages = [
+                _Page("第一章 总则\n本规范适用于高压电器。"),
+                _Page("第二章 术语\n本章规定术语定义。"),
+            ]
+
+    monkeypatch.setitem(sys.modules, "pypdf", types.SimpleNamespace(PdfReader=_Reader))
+    client = MinerUClient()
+    out = client.parse_pdf(b"%PDF-1.4 fake")
+    pages = out.get("pages") or []
+    assert len(pages) == 2
+    assert pages[0]["page_no"] == 1
+    assert "第一章 总则" in pages[0]["blocks"][0]["text"]
+    assert pages[1]["page_no"] == 2
+    assert any("术语" in (b.get("text") or "") for b in pages[1].get("blocks", []))
+
+
+def test_parse_pdf_without_endpoint_falls_back_when_local_parser_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(MinerUClient, "_parse_pdf_locally", lambda self, pdf_bytes: None)
+    client = MinerUClient()
+    out = client.parse_pdf(b"%PDF-1.4\nfallback text line")
+    pages = out.get("pages") or []
+    assert len(pages) == 1
+    assert pages[0]["page_no"] == 1
+    assert len(pages[0].get("blocks") or []) >= 1
+
+
+def test_page_lines_from_text_merges_single_char_lines() -> None:
+    client = MinerUClient()
+    raw = "\n".join(list("第一章总则。第二章术语。第三章施工要求。第四章验收规定。"))
+    lines = client._page_lines_from_text(raw)  # noqa: SLF001
+    assert len(lines) >= 2
+    assert any("第一章总则" in line for line in lines)
+
+
+def test_parse_pdf_local_fallbacks_when_layout_extract_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Page:
+        def extract_text(self, extraction_mode=None):  # noqa: ANN001
+            if extraction_mode is not None:
+                raise ValueError("layout extraction failed")
+            return "第一章 总则。"
+
+    class _Reader:
+        def __init__(self, _buf: io.BytesIO) -> None:
+            self.pages = [_Page()]
+
+    monkeypatch.setitem(sys.modules, "pypdf", types.SimpleNamespace(PdfReader=_Reader))
+    out = MinerUClient().parse_pdf(b"%PDF-1.4 fake")
+    pages = out.get("pages") or []
+    assert len(pages) == 1
+    assert any("第一章 总则" in (b.get("text") or "") for b in pages[0].get("blocks", []))
+
+
+def test_parse_pdf_local_fallbacks_when_layout_extract_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Page:
+        def extract_text(self, extraction_mode=None):  # noqa: ANN001
+            if extraction_mode is not None:
+                return ""
+            return "第二章 术语。"
+
+    class _Reader:
+        def __init__(self, _buf: io.BytesIO) -> None:
+            self.pages = [_Page()]
+
+    monkeypatch.setitem(sys.modules, "pypdf", types.SimpleNamespace(PdfReader=_Reader))
+    out = MinerUClient().parse_pdf(b"%PDF-1.4 fake")
+    pages = out.get("pages") or []
+    assert len(pages) == 1
+    assert any("第二章 术语" in (b.get("text") or "") for b in pages[0].get("blocks", []))

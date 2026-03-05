@@ -523,7 +523,26 @@ class RuntimeRerankClient:
 
     def _hit_text(self, hit: dict[str, Any]) -> str:
         payload = (hit or {}).get("payload") or {}
-        return str(payload.get("chunk_text") or payload.get("excerpt") or "").strip()
+        text = str(payload.get("chunk_text") or payload.get("excerpt") or "").strip()
+        include_meta_raw = str(os.getenv("RERANK_INCLUDE_METADATA", "1")).strip().lower()
+        include_meta = include_meta_raw not in {"0", "false", "no", "off", ""}
+        if not include_meta:
+            return text
+
+        clause_id = str(payload.get("clause_id") or payload.get("clause_no") or payload.get("article_no") or "").strip()
+        parts: list[str] = []
+        for key in ("doc_name", "standard_no", "doc_type", "version_id", "source_type", "route"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                parts.append(f"{key}={value}")
+        if clause_id:
+            parts.append(f"clause_id={clause_id}")
+        if not parts:
+            return text
+        meta = " | ".join(parts)
+        if not text:
+            return f"[{meta}]"
+        return f"[{meta}]\n{text}"
 
     def _fallback(self, question: str, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
         tokens = set(re.findall(r"[A-Za-z0-9\u4e00-\u9fa5]+", question.lower()))
@@ -846,6 +865,165 @@ def _query_doc_type_prior(question: str) -> str | None:
         if any(hint in q for hint in hints):
             return doc_type
     return None
+
+
+def _normalize_compact_upper(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().upper())
+
+
+def _is_precision_query(question: str, standard_tokens: list[str], clause_tokens: list[str]) -> bool:
+    if clause_tokens:
+        return True
+    if not standard_tokens:
+        return False
+    if _is_listing_query(question):
+        return False
+    max_len = max(12, _safe_int(os.getenv("HYBRID_ROUTE_PRECISION_MAX_QUERY_LEN", "48"), 48))
+    compact_len = len(re.sub(r"\s+", "", str(question or "")))
+    return compact_len <= max_len
+
+
+def _build_route_plan(
+    question: str,
+    filter_json: dict[str, Any] | None,
+    standard_tokens: list[str],
+    clause_tokens: list[str],
+    table_query: bool,
+) -> dict[str, Any]:
+    has_doc_scope = _has_doc_scope_filter(filter_json)
+    plan: dict[str, Any] = {
+        "enabled": _env_enabled("HYBRID_ROUTE_GATING_ENABLED", default=True),
+        "precision_query": False,
+        "has_doc_scope": has_doc_scope,
+        "table_query": bool(table_query),
+        "enable_dense": True,
+        "enable_sparse": True,
+        "enable_keyword": True,
+        "enable_structured": True,
+        "enable_graphrag": True,
+        "reason": "default",
+    }
+    if not bool(plan["enabled"]):
+        plan["reason"] = "router_disabled"
+        return plan
+
+    precision = _is_precision_query(question=question, standard_tokens=standard_tokens, clause_tokens=clause_tokens)
+    plan["precision_query"] = precision
+    if precision:
+        plan["reason"] = "precision"
+        if (
+            not has_doc_scope
+            and not table_query
+            and _env_enabled("HYBRID_ROUTE_DISABLE_SPARSE_ON_PRECISION", default=True)
+        ):
+            plan["enable_sparse"] = False
+            plan["reason"] = "precision_disable_sparse"
+        if _env_enabled("HYBRID_ROUTE_DISABLE_GRAPHRAG_ON_PRECISION", default=True):
+            plan["enable_graphrag"] = False
+    if table_query and _env_enabled("HYBRID_ROUTE_TABLE_FORCE_SPARSE", default=True):
+        plan["enable_sparse"] = True
+    if has_doc_scope and _env_enabled("HYBRID_ROUTE_DOC_SCOPE_FORCE_SPARSE", default=True):
+        plan["enable_sparse"] = True
+    return plan
+
+
+def _hit_matches_precision(
+    payload: dict[str, Any],
+    standard_tokens: list[str],
+    clause_tokens: list[str],
+) -> bool:
+    if standard_tokens:
+        token_fields = [
+            _normalize_compact_upper(payload.get("standard_no")),
+            _normalize_compact_upper(payload.get("doc_name")),
+            _normalize_compact_upper(payload.get("chunk_text") or payload.get("excerpt")),
+        ]
+        norm_tokens = [_normalize_compact_upper(item) for item in standard_tokens if str(item or "").strip()]
+        if not any(token and any(token in field for field in token_fields if field) for token in norm_tokens):
+            return False
+    if clause_tokens:
+        clause_payload = str(payload.get("clause_id") or payload.get("clause_no") or payload.get("article_no") or "").strip()
+        if clause_payload:
+            if not any(
+                clause_payload == clause
+                or clause_payload.startswith(f"{clause}.")
+                or clause.startswith(f"{clause_payload}.")
+                for clause in clause_tokens
+            ):
+                return False
+        else:
+            text = str(payload.get("chunk_text") or payload.get("excerpt") or "")
+            if not any(clause in text for clause in clause_tokens):
+                return False
+    return True
+
+
+def _lexical_gate_hits(question: str, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(hits) <= 1:
+        return hits
+    terms = _extract_query_terms(question)
+    if not terms:
+        return hits
+
+    min_ratio = _safe_float(os.getenv("HYBRID_ROUTE_LEXICAL_MIN_RATIO", "0.25"), 0.25)
+    min_ratio = min(1.0, max(0.0, min_ratio))
+    min_abs = max(0.0, _safe_float(os.getenv("HYBRID_ROUTE_LEXICAL_MIN_ABS", "0.3"), 0.3))
+    fallback_keep = max(1, _safe_int(os.getenv("HYBRID_ROUTE_LEXICAL_MIN_KEEP", "3"), 3))
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    top_score = 0.0
+    for hit in hits:
+        payload = (hit or {}).get("payload") or {}
+        lexical = _keyword_score(_payload_search_text(payload), terms)
+        top_score = max(top_score, lexical)
+        scored.append((lexical, hit))
+
+    threshold = max(min_abs, top_score * min_ratio)
+    kept = [item for lexical, item in scored if lexical > 0 and lexical >= threshold]
+    if kept:
+        return kept
+    return list(hits[:fallback_keep])
+
+
+def _apply_route_gate(
+    question: str,
+    route: str,
+    hits: list[dict[str, Any]],
+    route_plan: dict[str, Any],
+    standard_tokens: list[str],
+    clause_tokens: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    before = len(hits)
+    if before <= 1:
+        return hits, {"before": before, "after": before}
+
+    gated = list(hits)
+    if (
+        bool(route_plan.get("precision_query"))
+        and route in {"sparse", "keyword", "filter_keyword"}
+        and _env_enabled("HYBRID_ROUTE_GATE_PRECISION_HITS", default=True)
+    ):
+        filtered = [
+            hit
+            for hit in gated
+            if _hit_matches_precision(
+                payload=((hit or {}).get("payload") or {}),
+                standard_tokens=standard_tokens,
+                clause_tokens=clause_tokens,
+            )
+        ]
+        if filtered:
+            gated = filtered
+        elif _env_enabled("HYBRID_ROUTE_GATE_DROP_ALL_ON_MISMATCH", default=False):
+            gated = []
+
+    if (
+        route in {"sparse", "keyword", "filter_keyword"}
+        and _env_enabled("HYBRID_ROUTE_LEXICAL_GATE_ENABLED", default=True)
+    ):
+        gated = _lexical_gate_hits(question=question, hits=gated)
+
+    return gated, {"before": before, "after": len(gated)}
 
 
 def _doc_scope_from_filter(filter_json: dict[str, Any] | None) -> tuple[set[str], set[str]]:
@@ -1494,6 +1672,7 @@ def hybrid_search(
 ) -> dict[str, Any]:
     parsed_filter, sparse_query, dense_query_text = parse_filter_spec(question, entity_index)
     filter_json = _merge_filters(parsed_filter, search_filter)
+    standard_tokens = _extract_standard_tokens(question)
     query_doc_type = _query_doc_type_prior(question)
     if query_doc_type and not _has_doc_scope_filter(filter_json):
         filter_json = _merge_filters(
@@ -1501,6 +1680,14 @@ def hybrid_search(
             {"must": [{"key": "doc_type", "match": {"value": query_doc_type}}]},
         )
     clause_hits = extract_clause_ids(question)
+    table_query = _is_table_query(question)
+    route_plan = _build_route_plan(
+        question=question,
+        filter_json=filter_json,
+        standard_tokens=standard_tokens,
+        clause_tokens=clause_hits,
+        table_query=table_query,
+    )
     chapter_prefixes = _chapter_prefixes_from_question(question=question, clause_hits=clause_hits)
     if chapter_prefixes:
         chapter_filter = _remove_clause_constraints(filter_json)
@@ -1619,7 +1806,6 @@ def hybrid_search(
     embedding_client = SimpleEmbeddingClient()
     query_vector = embedding_client.embed_text(dense_query_text, runtime_config=runtime_config)
     embedding_meta = embedding_client.pop_last_call_meta()
-    table_query = _is_table_query(question)
     table_sparse_enabled = table_query and _env_enabled("HYBRID_TABLE_QUERY_SPARSE_FILTER", default=False)
     table_sparse_filter = _merge_filters(filter_json, _table_query_extra_filter(table_sparse_enabled))
     vector_top_k = max(top_k, int(os.getenv("HYBRID_VECTOR_TOP_K", "48")))
@@ -1638,6 +1824,7 @@ def hybrid_search(
 
     route_lists: list[list[dict[str, Any]]] = [vector_hits]
     route_counts: dict[str, int] = {"dense": len(vector_hits), "keyword": 0, "filter_keyword": 0}
+    route_gate_counts: dict[str, dict[str, int]] = {}
     degraded_routes: dict[str, str] = {}
     if bool(embedding_meta.get("used_stub")):
         degraded_routes["embedding"] = str(embedding_meta.get("fallback_reason") or "stub")
@@ -1660,12 +1847,21 @@ def hybrid_search(
         except Exception as exc:  # noqa: BLE001
             degraded_routes["filter_keyword"] = str(exc)
             filter_keyword_hits = []
+    filter_keyword_hits, gate_stats = _apply_route_gate(
+        question=question,
+        route="filter_keyword",
+        hits=filter_keyword_hits,
+        route_plan=route_plan,
+        standard_tokens=standard_tokens,
+        clause_tokens=clause_hits,
+    )
+    route_gate_counts["filter_keyword"] = gate_stats
     if filter_keyword_hits:
         route_lists.append(filter_keyword_hits)
     route_counts["filter_keyword"] = len(filter_keyword_hits)
 
     sparse_candidates: list[dict[str, Any]] = []
-    if _env_enabled("ENABLE_PG_BM25", default=True):
+    if bool(route_plan.get("enable_sparse", True)) and _env_enabled("ENABLE_PG_BM25", default=True):
         try:
             sparse_candidates.extend(
                 PgBM25SparseRetriever().search(
@@ -1677,7 +1873,7 @@ def hybrid_search(
         except Exception as exc:  # noqa: BLE001
             degraded_routes["pg_bm25"] = str(exc)
 
-    if _env_enabled("ENABLE_SIRCHMUNK", default=False):
+    if bool(route_plan.get("enable_sparse", True)) and _env_enabled("ENABLE_SIRCHMUNK", default=False):
         try:
             sparse_candidates.extend(
                 SirchmunkClient().search(
@@ -1695,6 +1891,15 @@ def hybrid_search(
         selected_doc_ids=scoped_doc_ids,
         selected_version_ids=scoped_version_ids,
     )
+    sparse_hits, gate_stats = _apply_route_gate(
+        question=question,
+        route="sparse",
+        hits=sparse_hits,
+        route_plan=route_plan,
+        standard_tokens=standard_tokens,
+        clause_tokens=clause_hits,
+    )
+    route_gate_counts["sparse"] = gate_stats
     if sparse_hits:
         route_lists.append(sparse_hits)
     route_counts["sparse"] = len(sparse_hits)
@@ -1702,7 +1907,9 @@ def hybrid_search(
     keyword_hits: list[dict[str, Any]] = []
     allow_keyword = _allow_keyword_search(repo)
     keyword_fallback_only = _env_enabled("HYBRID_KEYWORD_FALLBACK_ONLY", default=False)
-    should_run_keyword = allow_keyword and (not keyword_fallback_only or not sparse_hits)
+    should_run_keyword = bool(route_plan.get("enable_keyword", True)) and allow_keyword and (
+        not keyword_fallback_only or not sparse_hits
+    )
     if should_run_keyword:
         try:
             keyword_hits = repo.keyword_search(query_text=question, filter_json=filter_json, limit=keyword_top_k)
@@ -1712,12 +1919,21 @@ def hybrid_search(
                     payload.setdefault("route", "keyword")
         except Exception:  # noqa: BLE001
             keyword_hits = []
+    keyword_hits, gate_stats = _apply_route_gate(
+        question=question,
+        route="keyword",
+        hits=keyword_hits,
+        route_plan=route_plan,
+        standard_tokens=standard_tokens,
+        clause_tokens=clause_hits,
+    )
+    route_gate_counts["keyword"] = gate_stats
     if keyword_hits:
         route_lists.append(keyword_hits)
     route_counts["keyword"] = len(keyword_hits)
 
     structured_hits: list[dict[str, Any]] = []
-    if _env_enabled("ENABLE_STRUCTURED_LOOKUP", default=False):
+    if bool(route_plan.get("enable_structured", True)) and _env_enabled("ENABLE_STRUCTURED_LOOKUP", default=False):
         try:
             structured_hits = _normalize_route_hits(
                 StructuredLookupService().lookup(question=question, top_n=structured_top_k),
@@ -1732,9 +1948,13 @@ def hybrid_search(
 
     pre_graphrag_hits = _fuse_rrf(route_lists, limit=fused_limit)
     graphrag_hits: list[dict[str, Any]] = []
-    if _env_enabled("ENABLE_YOUTU_GRAPHRAG", default=False) and _should_trigger_graphrag(
+    if (
+        bool(route_plan.get("enable_graphrag", True))
+        and _env_enabled("ENABLE_YOUTU_GRAPHRAG", default=False)
+        and _should_trigger_graphrag(
         question=question,
         current_hits=pre_graphrag_hits,
+        )
     ):
         try:
             graphrag_hits = _normalize_route_hits(
@@ -1763,6 +1983,8 @@ def hybrid_search(
         "filter_json": filter_json,
         "debug": {
             "route_counts": route_counts,
+            "route_gate_counts": route_gate_counts,
+            "route_plan": route_plan,
             "degraded_routes": degraded_routes,
             "explanation_attach": explanation_stats,
             "embedding": embedding_meta,

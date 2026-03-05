@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir \
     pydantic \
     pyyaml \
     requests \
+    pypdf \
     redis \
     minio \
     psycopg2-binary
