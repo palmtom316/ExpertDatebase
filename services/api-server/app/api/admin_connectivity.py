@@ -258,10 +258,13 @@ def _test_llm(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _test_embedding(payload: dict[str, Any]) -> dict[str, Any]:
-    provider = _s(payload, "embedding_provider").lower() or "stub"
-    api_key = _normalize_token(_s(payload, "embedding_api_key") or _s(payload, "llm_api_key"))
+    provider = _s(payload, "embedding_provider").lower() or "auto"
+    api_key = _normalize_token(_s(payload, "embedding_api_key"))
     model = _s(payload, "embedding_model") or "text-embedding-3-small"
-    base_url = (_s(payload, "embedding_base_url") or _s(payload, "llm_base_url") or "https://api.openai.com/v1").rstrip("/")
+    base_url = (_s(payload, "embedding_base_url") or "https://api.openai.com/v1").rstrip("/")
+
+    if provider == "auto":
+        provider = "openai" if api_key else "stub"
 
     if provider == "stub":
         return _ok(target="embedding", message="Embedding 联通成功(stub)", detail={"provider": "stub"})
@@ -297,10 +300,13 @@ def _test_embedding(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _test_rerank(payload: dict[str, Any]) -> dict[str, Any]:
-    provider = _s(payload, "rerank_provider").lower() or "stub"
-    api_key = _normalize_token(_s(payload, "rerank_api_key") or _s(payload, "llm_api_key"))
+    provider = _s(payload, "rerank_provider").lower() or "auto"
+    api_key = _normalize_token(_s(payload, "rerank_api_key"))
     model = _s(payload, "rerank_model") or "BAAI/bge-reranker-v2-m3"
-    base_url = (_s(payload, "rerank_base_url") or _s(payload, "llm_base_url") or "https://api.openai.com/v1").rstrip("/")
+    base_url = (_s(payload, "rerank_base_url") or "https://api.openai.com/v1").rstrip("/")
+
+    if provider == "auto":
+        provider = "openai" if api_key else "stub"
 
     if provider in {"stub", "local"}:
         return _ok(target="rerank", message=f"Rerank 联通成功({provider})", detail={"provider": provider})

@@ -34,7 +34,7 @@ def test_evaluate_retrieval_hit_and_mrr() -> None:
     assert result["query_count"] == 3
     assert abs(result["hit_at_5"] - (2 / 3)) < 1e-9
     assert abs(result["hit_at_10"] - (2 / 3)) < 1e-9
-    assert abs(result["evidence_hit_rate_at_10"] - (2 / 3)) < 1e-9
+    assert abs(result["evidence_hit_rate_at_10"] - 0.0) < 1e-9
     # RR = 1 + 1/2 + 0
     assert abs(result["mrr"] - (1.5 / 3)) < 1e-9
     assert abs(result["clause_hit_at_k"] - 0.0) < 1e-9
@@ -64,7 +64,7 @@ def test_evaluate_retrieval_relevant_any() -> None:
     result = evaluate_retrieval_samples(samples=samples, search_fn=fake_search, top_k=10)
     assert abs(result["hit_at_5"] - 1.0) < 1e-9
     assert abs(result["mrr"] - 0.5) < 1e-9
-    assert abs(result["evidence_hit_rate_at_10"] - 1.0) < 1e-9
+    assert abs(result["evidence_hit_rate_at_10"] - 0.0) < 1e-9
 
 
 def test_evaluate_retrieval_constraint_metrics() -> None:

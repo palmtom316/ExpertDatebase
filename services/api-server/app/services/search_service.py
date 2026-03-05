@@ -93,6 +93,7 @@ class QdrantHttpRepo:
         self.vector_name = vector_name
         self.timeout_s = timeout_s
         self._collection_ready = False
+        self._last_search_degraded_reason: str | None = None
 
     def _url(self, suffix: str) -> str:
         return f"{self.endpoint}{suffix}"
@@ -149,6 +150,7 @@ class QdrantHttpRepo:
         resp.raise_for_status()
 
     def search(self, query_vector: list[float], filter_json: dict[str, Any] | None, limit: int = 5) -> list[dict[str, Any]]:
+        self._last_search_degraded_reason = None
         body: dict[str, Any] = {
             "query": query_vector,
             "using": self.vector_name,
@@ -169,6 +171,7 @@ class QdrantHttpRepo:
             # Fresh/local environments may not have indexed data yet, and Qdrant
             # reports missing collection as 404. Treat it as empty search hits.
             if resp.status_code == 404:
+                self._last_search_degraded_reason = "collection_not_found"
                 return []
             # Runtime embedding model may temporarily mismatch the indexed vector
             # dimension (e.g., user switched provider/model). Degrade to no hits
@@ -177,6 +180,7 @@ class QdrantHttpRepo:
                 status_code=int(getattr(resp, "status_code", 0) or 0),
                 body=str(getattr(resp, "text", "") or ""),
             ):
+                self._last_search_degraded_reason = "vector_dimension_mismatch"
                 return []
             raise
         payload = resp.json().get("result", [])
@@ -294,6 +298,7 @@ class SimpleEmbeddingClient:
         self.timeout_s = float(os.getenv("EMBEDDING_HTTP_TIMEOUT_S", "15"))
         self._cached_remote_stub_dim: int | None = None
         self._remote_stub_dim_probed = False
+        self._last_call_meta: dict[str, Any] = {}
 
     def _normalize_token(self, raw: str) -> str:
         token = str(raw or "").strip()
@@ -303,9 +308,19 @@ class SimpleEmbeddingClient:
 
     def _resolve_runtime(self, runtime_config: dict[str, Any] | None = None) -> dict[str, str]:
         runtime = runtime_config or {}
-        api_key = self._normalize_token(str(runtime.get("embedding_api_key") or ""))
+        api_key = self._normalize_token(
+            str(
+                runtime.get("embedding_api_key")
+                or os.getenv("EMBEDDING_API_KEY")
+                or os.getenv("OPENAI_API_KEY")
+                or ""
+            )
+        )
+        provider = str(runtime.get("embedding_provider") or os.getenv("EMBEDDING_PROVIDER", "auto")).strip().lower()
+        if provider == "auto":
+            provider = "openai" if api_key else "stub"
         return {
-            "provider": str(runtime.get("embedding_provider") or os.getenv("EMBEDDING_PROVIDER", "stub")).strip().lower(),
+            "provider": provider,
             "api_key": api_key,
             "base_url": str(
                 runtime.get("embedding_base_url")
@@ -320,6 +335,11 @@ class SimpleEmbeddingClient:
                 or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
             ).strip(),
         }
+
+    def pop_last_call_meta(self) -> dict[str, Any]:
+        meta = dict(self._last_call_meta or {})
+        self._last_call_meta = {}
+        return meta
 
     def _is_strict_fallback(self, runtime_config: dict[str, Any] | None = None) -> bool:
         runtime = runtime_config or {}
@@ -421,15 +441,32 @@ class SimpleEmbeddingClient:
         cfg = self._resolve_runtime(runtime_config=runtime_config)
         provider = cfg["provider"] or "stub"
         strict_fallback = self._is_strict_fallback(runtime_config=runtime_config)
+        self._last_call_meta = {
+            "provider": provider,
+            "model": cfg.get("model", ""),
+            "used_stub": False,
+            "fallback_reason": "",
+            "strict": bool(strict_fallback),
+        }
         try:
             if provider == "openai":
-                return self._openai_compatible(
+                vec = self._openai_compatible(
                     text=text,
                     api_key=cfg["api_key"],
                     base_url=cfg["base_url"],
                     model=cfg["model"],
                 )
+                self._last_call_meta.update({"used_stub": False, "fallback_reason": ""})
+                return vec
         except Exception as exc:  # noqa: BLE001
+            fallback_reason = f"openai_failed:{type(exc).__name__}"
+            self._last_call_meta.update(
+                {
+                    "used_stub": True,
+                    "fallback_reason": fallback_reason,
+                    "error": str(exc),
+                }
+            )
             _log.warning(
                 "embedding_failed provider=%s model=%s strict=%s fallback=stub error=%s",
                 provider,
@@ -440,6 +477,12 @@ class SimpleEmbeddingClient:
             if strict_fallback:
                 raise RuntimeError(f"embedding failed in strict mode: {exc}") from exc
             return self._stub(text)
+        self._last_call_meta.update(
+            {
+                "used_stub": True,
+                "fallback_reason": "provider_stub" if provider == "stub" else "provider_non_openai",
+            }
+        )
         return self._stub(text)
 
 
@@ -455,9 +498,19 @@ class RuntimeRerankClient:
 
     def _resolve_runtime(self, runtime_config: dict[str, Any] | None = None) -> dict[str, str]:
         runtime = runtime_config or {}
-        api_key = self._normalize_token(str(runtime.get("rerank_api_key") or ""))
+        api_key = self._normalize_token(
+            str(
+                runtime.get("rerank_api_key")
+                or os.getenv("RERANK_API_KEY")
+                or os.getenv("OPENAI_API_KEY")
+                or ""
+            )
+        )
+        provider = str(runtime.get("rerank_provider") or os.getenv("RERANK_PROVIDER", "auto")).strip().lower()
+        if provider == "auto":
+            provider = "openai" if api_key else "stub"
         return {
-            "provider": str(runtime.get("rerank_provider") or os.getenv("RERANK_PROVIDER", "stub")).strip().lower(),
+            "provider": provider,
             "api_key": api_key,
             "base_url": str(
                 runtime.get("rerank_base_url") or os.getenv("RERANK_BASE_URL") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -1087,6 +1140,11 @@ def _attach_explanation_siblings(
     out: list[dict[str, Any]] = []
     searched_clause: set[str] = set()
     clauses_with_hits: set[str] = set()
+    anchor_clauses: set[str] = {
+        str(item.get("clause_id") or "").strip()
+        for item in citations
+        if str(item.get("source_type") or "").strip().lower() != "explanation" and str(item.get("clause_id") or "").strip()
+    }
 
     def _add(c: dict[str, Any], is_attached: bool = False) -> bool:
         key = (
@@ -1105,8 +1163,14 @@ def _attach_explanation_siblings(
         return True
 
     for citation in citations:
-        _add(citation)
+        source_type = str(citation.get("source_type") or "").strip().lower()
         clause_id = str(citation.get("clause_id") or "").strip()
+        is_existing_sibling = source_type == "explanation" and bool(clause_id) and clause_id in anchor_clauses
+        current = citation
+        if is_existing_sibling:
+            current = dict(citation)
+            current["route"] = "explanation_sibling"
+        _add(current, is_attached=is_existing_sibling)
         if not clause_id:
             continue
         stats["clause_candidates"] += 1
@@ -1135,7 +1199,7 @@ def _attach_explanation_siblings(
             payload = (hit or {}).get("payload") or {}
             if not isinstance(payload, dict):
                 continue
-            payload.setdefault("route", "explanation_sibling")
+            payload["route"] = "explanation_sibling"
             if _add(_to_citation(payload), is_attached=True):
                 clauses_with_hits.add(clause_id)
 
@@ -1318,11 +1382,17 @@ def hybrid_search(
             except Exception:  # noqa: BLE001
                 clause_hits_exact = []
         if clause_hits_exact:
+            filtered_clause_hits: list[dict[str, Any]] = []
             for hit in clause_hits_exact:
                 payload = (hit or {}).get("payload")
                 if isinstance(payload, dict):
                     payload.setdefault("route", "clause_exact")
-            hits = clause_hits_exact
+                    source_type = str(payload.get("source_type") or "").strip().lower()
+                    if source_type != "explanation":
+                        filtered_clause_hits.append(hit)
+            # Keep explanation chunks as sibling attachments when possible to avoid
+            # clause route being dominated by explanation text.
+            hits = filtered_clause_hits or clause_hits_exact
             if _env_enabled("ENABLE_RERANK", default=True):
                 hits = RuntimeRerankClient().rerank_hits(question=question, hits=hits, runtime_config=runtime_config)
             if _env_enabled("HYBRID_POST_KEYWORD_BOOST", default=True):
@@ -1347,7 +1417,9 @@ def hybrid_search(
         # If exact route yields nothing, keep clause fallback filter for dense/keyword routes.
         filter_json = clause_no_filter
 
-    query_vector = SimpleEmbeddingClient().embed_text(dense_query_text, runtime_config=runtime_config)
+    embedding_client = SimpleEmbeddingClient()
+    query_vector = embedding_client.embed_text(dense_query_text, runtime_config=runtime_config)
+    embedding_meta = embedding_client.pop_last_call_meta()
     table_query = _is_table_query(question)
     table_sparse_enabled = table_query and _env_enabled("HYBRID_TABLE_QUERY_SPARSE_FILTER", default=False)
     table_sparse_filter = _merge_filters(filter_json, _table_query_extra_filter(table_sparse_enabled))
@@ -1368,6 +1440,12 @@ def hybrid_search(
     route_lists: list[list[dict[str, Any]]] = [vector_hits]
     route_counts: dict[str, int] = {"dense": len(vector_hits), "keyword": 0, "filter_keyword": 0}
     degraded_routes: dict[str, str] = {}
+    if bool(embedding_meta.get("used_stub")):
+        degraded_routes["embedding"] = str(embedding_meta.get("fallback_reason") or "stub")
+    if isinstance(repo, QdrantHttpRepo):
+        reason = str(getattr(repo, "_last_search_degraded_reason", "") or "").strip()
+        if reason:
+            degraded_routes["dense"] = reason
 
     # Doc-scoped fallback: when vector route misses (e.g., embedding mismatch),
     # scan selected document points and rank by lexical overlap.
@@ -1482,5 +1560,6 @@ def hybrid_search(
             "route_counts": route_counts,
             "degraded_routes": degraded_routes,
             "explanation_attach": explanation_stats,
+            "embedding": embedding_meta,
         },
     }

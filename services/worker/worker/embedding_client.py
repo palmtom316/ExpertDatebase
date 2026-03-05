@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import os
 import re
 
 import requests
+
+_log = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
@@ -23,6 +26,7 @@ class EmbeddingClient:
         self.timeout_s = float(os.getenv("EMBEDDING_HTTP_TIMEOUT_S", "15"))
         self._cached_remote_stub_dim: int | None = None
         self._remote_stub_dim_probed = False
+        self._last_call_meta: dict[str, object] = {}
 
     def _normalize_token(self, raw: str) -> str:
         token = str(raw or "").strip()
@@ -32,7 +36,14 @@ class EmbeddingClient:
 
     def _resolve_runtime(self, runtime_config: dict | None = None) -> dict[str, str]:
         runtime = runtime_config or {}
-        api_key = self._normalize_token(str(runtime.get("embedding_api_key") or ""))
+        api_key = self._normalize_token(
+            str(
+                runtime.get("embedding_api_key")
+                or os.getenv("EMBEDDING_API_KEY")
+                or os.getenv("OPENAI_API_KEY")
+                or ""
+            )
+        )
         provider = str(runtime.get("embedding_provider") or self.provider or "auto").strip().lower()
         if provider == "auto":
             provider = "openai" if api_key else "stub"
@@ -52,6 +63,19 @@ class EmbeddingClient:
                 or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
             ).strip(),
         }
+
+    def _is_strict_fallback(self, runtime_config: dict | None = None) -> bool:
+        runtime = runtime_config or {}
+        strict_raw = str(runtime.get("embedding_fallback_strict") or os.getenv("EMBEDDING_FALLBACK_STRICT", "")).strip().lower()
+        if strict_raw:
+            return strict_raw in {"1", "true", "yes", "on"}
+        app_env = str(os.getenv("APP_ENV", "development")).strip().lower()
+        return app_env in {"prod", "production"}
+
+    def pop_last_call_meta(self) -> dict[str, object]:
+        meta = dict(self._last_call_meta or {})
+        self._last_call_meta = {}
+        return meta
 
     def _resolve_remote_stub_dim(self) -> int | None:
         endpoint = str(os.getenv("VECTORDB_ENDPOINT") or "").strip()
@@ -146,15 +170,48 @@ class EmbeddingClient:
     def embed_text(self, text: str, runtime_config: dict | None = None) -> list[float]:
         cfg = self._resolve_runtime(runtime_config=runtime_config)
         provider = cfg["provider"]
+        strict_fallback = self._is_strict_fallback(runtime_config=runtime_config)
+        self._last_call_meta = {
+            "provider": provider,
+            "model": cfg.get("model", ""),
+            "used_stub": False,
+            "fallback_reason": "",
+            "strict": bool(strict_fallback),
+        }
 
         try:
             if provider == "openai":
-                return self._openai_compatible(
+                vec = self._openai_compatible(
                     text=text,
                     api_key=cfg["api_key"],
                     base_url=cfg["base_url"],
                     model=cfg["model"],
                 )
+                self._last_call_meta.update({"used_stub": False, "fallback_reason": ""})
+                return vec
         except Exception as exc:  # noqa: BLE001
-            print("embedding fallback to stub", str(exc))
+            fallback_reason = f"openai_failed:{type(exc).__name__}"
+            self._last_call_meta.update(
+                {
+                    "used_stub": True,
+                    "fallback_reason": fallback_reason,
+                    "error": str(exc),
+                }
+            )
+            _log.warning(
+                "embedding_failed provider=%s model=%s strict=%s fallback=stub error=%s",
+                provider,
+                cfg.get("model"),
+                strict_fallback,
+                str(exc),
+            )
+            if strict_fallback:
+                raise RuntimeError(f"embedding failed in strict mode: {exc}") from exc
+            return self._stub(text)
+        self._last_call_meta.update(
+            {
+                "used_stub": True,
+                "fallback_reason": "provider_stub" if provider == "stub" else "provider_non_openai",
+            }
+        )
         return self._stub(text)

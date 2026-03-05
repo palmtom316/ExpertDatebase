@@ -14,15 +14,8 @@ if str(SERVICE_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_ROOT))
 
 from app.services.retrieval_eval import evaluate_retrieval_samples
+from app.services.entity_index import build_entity_index_from_env
 from app.services.search_service import create_search_repo_from_env, hybrid_search
-
-
-class _EmptyEntityIndex:
-    def match_names(self, kind: str, question: str) -> list[str]:
-        return []
-
-    def get_id(self, kind: str, name: str) -> str | None:
-        return None
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -44,6 +37,14 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=10, help="Max hits per query (default: 10).")
     parser.add_argument("--output", default="", help="Optional output JSON path.")
     parser.add_argument("--report", default="", help="Optional report JSON path (for gate checks).")
+    parser.add_argument("--embedding-provider", default="", help="Optional runtime embedding provider override.")
+    parser.add_argument("--embedding-api-key", default="", help="Optional runtime embedding API key override.")
+    parser.add_argument("--embedding-model", default="", help="Optional runtime embedding model override.")
+    parser.add_argument("--embedding-base-url", default="", help="Optional runtime embedding base URL override.")
+    parser.add_argument("--rerank-provider", default="", help="Optional runtime rerank provider override.")
+    parser.add_argument("--rerank-api-key", default="", help="Optional runtime rerank API key override.")
+    parser.add_argument("--rerank-model", default="", help="Optional runtime rerank model override.")
+    parser.add_argument("--rerank-base-url", default="", help="Optional runtime rerank base URL override.")
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset).expanduser().resolve()
@@ -54,8 +55,19 @@ def main() -> int:
         raise RuntimeError("dataset is empty")
 
     repo = create_search_repo_from_env()
-    entity_index = _EmptyEntityIndex()
+    entity_index = build_entity_index_from_env()
     top_k = max(1, int(args.top_k))
+    runtime_config = {
+        "embedding_provider": str(args.embedding_provider or "").strip().lower(),
+        "embedding_api_key": str(args.embedding_api_key or "").strip(),
+        "embedding_model": str(args.embedding_model or "").strip(),
+        "embedding_base_url": str(args.embedding_base_url or "").strip(),
+        "rerank_provider": str(args.rerank_provider or "").strip().lower(),
+        "rerank_api_key": str(args.rerank_api_key or "").strip(),
+        "rerank_model": str(args.rerank_model or "").strip(),
+        "rerank_base_url": str(args.rerank_base_url or "").strip(),
+    }
+    runtime_config = {k: v for k, v in runtime_config.items() if v}
 
     def _search(sample: dict[str, Any]) -> list[dict[str, Any]]:
         query = str(sample.get("query") or "").strip()
@@ -75,6 +87,7 @@ def main() -> int:
             repo=repo,
             entity_index=entity_index,
             top_k=top_k,
+            runtime_config=runtime_config or None,
             search_filter=search_filter,
         )
         return res.get("hits") or []

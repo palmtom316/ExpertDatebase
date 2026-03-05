@@ -1474,6 +1474,7 @@ def chat_with_citations(
         search_filter=search_filter,
     )
     citations = _dedupe_citations(search_res["citations"])
+    retrieval_debug = search_res.get("debug") if isinstance(search_res, dict) else {}
     selected_mode = str(mode or "qa").strip().lower()
     if selected_mode == "constraint":
         constraints = _build_constraint_items(citations)
@@ -1487,6 +1488,7 @@ def chat_with_citations(
             "citations": citations,
             "expandable_evidence": _build_expandable_evidence(citations),
             "llm": {"provider": "local", "model": "constraint-summary"},
+            "retrieval_debug": retrieval_debug,
         }
 
     if citations:
@@ -1505,6 +1507,7 @@ def chat_with_citations(
                 "citations": output_citations,
                 "expandable_evidence": _build_expandable_evidence(output_citations),
                 "llm": {"provider": "local", "model": "clause-template-v1"},
+                "retrieval_debug": retrieval_debug,
             }
 
     prompt = _build_qa_prompt(question=question, citations=citations)
@@ -1525,4 +1528,5 @@ def chat_with_citations(
         "citations": citations,
         "expandable_evidence": _build_expandable_evidence(citations),
         "llm": {"provider": llm_res["provider"], "model": llm_res["model"]},
+        "retrieval_debug": retrieval_debug,
     }

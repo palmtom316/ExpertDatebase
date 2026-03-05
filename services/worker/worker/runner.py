@@ -35,6 +35,29 @@ class WorkerRuntime:
     doc_pages_repo: Any | None = None
 
 
+def _is_truthy(value: Any) -> bool:
+    raw = str(value or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _load_cached_mineru_artifact(storage: Any, doc_id: str, version_id: str) -> dict[str, Any] | None:
+    key = f"mineru/{doc_id}/{version_id}/mineru.pages.json"
+    get_fn = getattr(storage, "get_bytes", None)
+    if not callable(get_fn):
+        return None
+    try:
+        payload = get_fn(key)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        parsed = json.loads(bytes(payload).decode("utf-8", errors="ignore"))
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(parsed, dict) and isinstance(parsed.get("pages"), list):
+        return parsed
+    return None
+
+
 def _put_artifact_bytes(storage: Any, key: str, payload: bytes, content_type: str) -> bool:
     put_fn = getattr(storage, "put_bytes", None)
     if not callable(put_fn):
@@ -369,10 +392,17 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
 
     pdf_bytes = rt.storage.get_bytes(object_key)
     runtime_config = job.get("runtime_config") if isinstance(job.get("runtime_config"), dict) else {}
-    try:
-        mineru_result = rt.mineru_client.parse_pdf(pdf_bytes, runtime_config=runtime_config)
-    except TypeError:
-        mineru_result = rt.mineru_client.parse_pdf(pdf_bytes)
+    reuse_cached_mineru = _is_truthy(runtime_config.get("reuse_mineru_artifacts")) or _env_enabled(
+        "WORKER_REUSE_MINERU_ARTIFACTS",
+        default=False,
+    )
+    mineru_result = _load_cached_mineru_artifact(rt.storage, doc_id=doc_id, version_id=version_id) if reuse_cached_mineru else None
+    mineru_source = "cached_artifact" if mineru_result is not None else "ocr_parse"
+    if mineru_result is None:
+        try:
+            mineru_result = rt.mineru_client.parse_pdf(pdf_bytes, runtime_config=runtime_config)
+        except TypeError:
+            mineru_result = rt.mineru_client.parse_pdf(pdf_bytes)
 
     visual_candidates = extract_visual_candidates(mineru_result)
     vl_result = VLRecognizer().enhance(visual_candidates, runtime_config=runtime_config)
@@ -436,6 +466,14 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
 
     entity_index = rt.entity_index or _EntityIndex()
     upserted = 0
+    embedding_stats: dict[str, Any] = {
+        "chunk_calls": 0,
+        "stub_calls": 0,
+        "fallback_stub_calls": 0,
+        "openai_calls": 0,
+        "providers": {},
+        "fallback_reasons": {},
+    }
 
     # Build per-page page_type map from table_struct results
     table_struct = result.get("table_struct") or {}
@@ -481,6 +519,22 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
             vector = rt.embedding_client.embed_text(chunk_for_payload["text"], runtime_config=runtime_config)
         except TypeError:
             vector = rt.embedding_client.embed_text(chunk_for_payload["text"])
+        meta_fn = getattr(rt.embedding_client, "pop_last_call_meta", None)
+        if callable(meta_fn):
+            meta = meta_fn() or {}
+            embedding_stats["chunk_calls"] = int(embedding_stats["chunk_calls"] or 0) + 1
+            provider_name = str(meta.get("provider") or "").strip().lower() or "unknown"
+            provider_counts = embedding_stats["providers"]
+            provider_counts[provider_name] = int(provider_counts.get(provider_name) or 0) + 1
+            if provider_name == "openai" and not bool(meta.get("used_stub")):
+                embedding_stats["openai_calls"] = int(embedding_stats["openai_calls"] or 0) + 1
+            if bool(meta.get("used_stub")):
+                embedding_stats["stub_calls"] = int(embedding_stats["stub_calls"] or 0) + 1
+                fallback_reason = str(meta.get("fallback_reason") or "").strip() or "stub"
+                reason_counts = embedding_stats["fallback_reasons"]
+                reason_counts[fallback_reason] = int(reason_counts.get(fallback_reason) or 0) + 1
+                if fallback_reason.startswith("openai_failed:"):
+                    embedding_stats["fallback_stub_calls"] = int(embedding_stats["fallback_stub_calls"] or 0) + 1
         point_id = f"{doc_id}:{version_id}:{chunk_for_payload['chunk_id']}"
         rt.qdrant_repo.upsert(point_id=point_id, vector=vector, payload=payload)
         upserted += 1
@@ -542,6 +596,8 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
             "model": vl_result.get("model"),
             "enabled": bool(vl_result.get("enabled")),
         },
+        "mineru_source": mineru_source,
+        "embedding_stats": embedding_stats,
         "artifacts": artifact_keys,
     }
     rt.doc_registry.mark_version_status(version_id=version_id, status="processed", notes=summary)

@@ -22,6 +22,7 @@ TASK_QUEUE = build_task_queue_from_env()
 
 class ReprocessRequest(BaseModel):
     version_id: str = Field(..., min_length=1)
+    reuse_mineru_artifacts: bool | None = True
     mineru_api_base: str | None = None
     mineru_api_key: str | None = None
     llm_provider: str | None = None
@@ -82,6 +83,8 @@ def reprocess(req: ReprocessRequest) -> dict:
         "vl_model": (req.vl_model or "").strip(),
         "vl_base_url": (req.vl_base_url or "").strip(),
     }
+    if req.reuse_mineru_artifacts is not None:
+        runtime_config["reuse_mineru_artifacts"] = bool(req.reuse_mineru_artifacts)
     runtime_config = {k: v for k, v in runtime_config.items() if v}
     result = reprocess_version(
         registry=REGISTRY,

@@ -198,12 +198,17 @@ def evaluate_retrieval_samples(
     for sample in samples:
         hits = search_fn(sample)
         hits_top_k = hits[:top_k]
+        hits_top_10 = hits[:10]
         rank = _first_relevant_rank(hits_top_k, sample)
         if rank is not None and rank <= 5:
             hit5 += 1
         if rank is not None and rank <= 10:
             hit10 += 1
-            evidence_hit10 += 1
+            if any(
+                _is_relevant_hit(hit, sample) and _has_complete_citation((hit or {}).get("payload") or {})
+                for hit in hits_top_10
+            ):
+                evidence_hit10 += 1
         if rank is not None:
             rr_sum += 1.0 / rank
         else:

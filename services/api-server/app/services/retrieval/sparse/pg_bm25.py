@@ -167,7 +167,13 @@ class PgBM25SparseRetriever:
             )
         self._schema_ready = True
 
-    def _search_like_fallback(self, query_text: str, limit: int, selected_doc_id: str = "") -> list[dict[str, Any]]:
+    def _search_like_fallback(
+        self,
+        query_text: str,
+        limit: int,
+        selected_doc_id: str = "",
+        selected_version_id: str = "",
+    ) -> list[dict[str, Any]]:
         if not self._engine:
             return []
         terms = _extract_cjk_terms(query_text=query_text, max_terms=14)
@@ -182,6 +188,8 @@ class PgBM25SparseRetriever:
         params: dict[str, Any] = {"limit": max(1, int(limit))}
         if selected_doc_id:
             params["doc_id"] = selected_doc_id
+        if selected_version_id:
+            params["version_id"] = selected_version_id
         if normalized_query and len(normalized_query) <= 40:
             params["q_phrase"] = f"%{normalized_query}%"
             score_parts.append(f"CASE WHEN {normalized_col} ILIKE :q_phrase THEN 6.0 ELSE 0 END")
@@ -197,6 +205,8 @@ class PgBM25SparseRetriever:
         if not score_parts or not where_parts:
             return []
         where_doc = "AND doc_id = :doc_id" if selected_doc_id else ""
+        where_version = "AND version_id = :version_id" if selected_version_id else ""
+        excerpt_limit = max(120, int(os.getenv("PG_BM25_EXCERPT_MAX_CHARS", "800")))
         score_sql = " + ".join(score_parts)
         where_sql = " OR ".join(where_parts)
         sql = text(
@@ -204,12 +214,13 @@ class PgBM25SparseRetriever:
             SELECT
               doc_id,
               page_no,
-              LEFT(text, 260) AS excerpt,
+              LEFT(text, {excerpt_limit}) AS excerpt,
               ({score_sql}) AS score,
               COALESCE(source_path, '') AS source_path
             FROM doc_pages
             WHERE ({where_sql})
               {where_doc}
+              {where_version}
             ORDER BY score DESC, page_no ASC
             LIMIT :limit
             """
@@ -253,26 +264,32 @@ class PgBM25SparseRetriever:
         limit = max(1, int(top_n))
 
         selected_doc_id = ""
+        selected_version_id = ""
         if isinstance(filters, dict):
             for cond in filters.get("must") or []:
                 if not isinstance(cond, dict):
                     continue
                 if str(cond.get("key") or "") == "doc_id":
                     selected_doc_id = str(((cond.get("match") or {}).get("value") or "")).strip()
-                    break
+                    continue
+                if str(cond.get("key") or "") == "version_id":
+                    selected_version_id = str(((cond.get("match") or {}).get("value") or "")).strip()
 
         where_doc = "AND doc_id = :doc_id" if selected_doc_id else ""
+        where_version = "AND version_id = :version_id" if selected_version_id else ""
+        excerpt_limit = max(120, int(os.getenv("PG_BM25_EXCERPT_MAX_CHARS", "800")))
         sql = text(
             f"""
             SELECT
               doc_id,
               page_no,
-              LEFT(text, 260) AS excerpt,
+              LEFT(text, {excerpt_limit}) AS excerpt,
               ts_rank_cd(tsv, websearch_to_tsquery('simple', :query)) AS score,
               COALESCE(source_path, '') AS source_path
             FROM doc_pages
             WHERE tsv @@ websearch_to_tsquery('simple', :query)
               {where_doc}
+              {where_version}
             ORDER BY score DESC
             LIMIT :limit
             """
@@ -280,6 +297,8 @@ class PgBM25SparseRetriever:
         params: dict[str, Any] = {"query": q, "limit": limit}
         if selected_doc_id:
             params["doc_id"] = selected_doc_id
+        if selected_version_id:
+            params["version_id"] = selected_version_id
 
         try:
             with self._engine.begin() as conn:
@@ -304,5 +323,10 @@ class PgBM25SparseRetriever:
         if out:
             return out
         if _contains_cjk(q):
-            return self._search_like_fallback(query_text=q, limit=limit, selected_doc_id=selected_doc_id)
+            return self._search_like_fallback(
+                query_text=q,
+                limit=limit,
+                selected_doc_id=selected_doc_id,
+                selected_version_id=selected_version_id,
+            )
         return []

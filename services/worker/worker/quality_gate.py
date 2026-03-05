@@ -94,6 +94,17 @@ def _has_evidence_signal(text: str) -> bool:
     return False
 
 
+def _is_short_clause_like(text: str) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return False
+    if re.search(r"(?<!\d)\d{1,2}(?:\.\d+){1,4}(?:\([0-9A-Za-z]+\))?(?!\d)", s):
+        return True
+    if re.search(r"(定义|术语|总则|适用范围|条文说明|强制性条文)", s):
+        return True
+    return False
+
+
 def filter_chunks_for_indexing(chunks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Drop duplicate/noisy chunks before vector indexing."""
     out: list[dict[str, Any]] = []
@@ -121,7 +132,12 @@ def filter_chunks_for_indexing(chunks: list[dict[str, Any]]) -> tuple[list[dict[
             dropped_noise += 1
             continue
 
-        if not is_table_row and len(normalized) < min_chars and not _has_evidence_signal(normalized):
+        if (
+            not is_table_row
+            and len(normalized) < min_chars
+            and not _has_evidence_signal(normalized)
+            and not _is_short_clause_like(normalized)
+        ):
             dropped_short += 1
             continue
 
