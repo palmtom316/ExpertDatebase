@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import time
 from typing import Any, Protocol
 from uuid import UUID, uuid5, NAMESPACE_URL
 
@@ -737,6 +738,15 @@ _STANDARD_QUERY_PAT = re.compile(
     r"(?<![A-Za-z0-9])((?:GB|DL/T|DL|NB/T|IEC|ISO)\s*[-A-Z]*\s*\d{2,6}(?:-\d{4})?)(?![A-Za-z0-9])",
     flags=re.IGNORECASE,
 )
+_DOC_TYPE_QUERY_HINTS: dict[str, tuple[str, ...]] = {
+    "规范规程": ("规范", "规程", "标准", "强制性条文", "国标", "gb", "dl/t", "nb/t", "iec", "iso"),
+    "投标文件": ("投标", "招标", "商务条款", "技术条款", "评标"),
+    "公司资质": ("公司资质", "企业资质", "许可证", "营业执照"),
+    "人员资质": ("人员资质", "项目经理证", "注册证", "职称"),
+    "公司业绩": ("公司业绩", "类似业绩", "合同业绩"),
+    "人员业绩": ("人员业绩", "个人业绩"),
+}
+_LOW_QUALITY_CACHE: dict[str, Any] = {"expires_at": 0.0, "doc_ids": set(), "version_ids": set()}
 
 
 def _clean_query_for_terms(query: str) -> str:
@@ -828,6 +838,123 @@ def _extract_standard_tokens(query: str) -> list[str]:
     return out
 
 
+def _query_doc_type_prior(question: str) -> str | None:
+    q = str(question or "").strip()
+    if not q:
+        return None
+    for doc_type, hints in _DOC_TYPE_QUERY_HINTS.items():
+        if any(hint in q for hint in hints):
+            return doc_type
+    return None
+
+
+def _doc_scope_from_filter(filter_json: dict[str, Any] | None) -> tuple[set[str], set[str]]:
+    doc_ids: set[str] = set()
+    version_ids: set[str] = set()
+    if not isinstance(filter_json, dict):
+        return doc_ids, version_ids
+    for cond in list(filter_json.get("must") or []):
+        key = str(cond.get("key") or "").strip()
+        if key not in {"doc_id", "version_id"}:
+            continue
+        match = cond.get("match") or {}
+        values: list[str] = []
+        if match.get("value") is not None:
+            values.append(str(match.get("value")))
+        if isinstance(match.get("any"), list):
+            values.extend([str(v) for v in match.get("any") if str(v or "").strip()])
+        if key == "doc_id":
+            doc_ids.update(v.strip() for v in values if v.strip())
+        else:
+            version_ids.update(v.strip() for v in values if v.strip())
+    return doc_ids, version_ids
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _low_quality_targets() -> tuple[set[str], set[str]]:
+    ttl_s = max(10, _safe_int(os.getenv("HYBRID_LOW_QUALITY_CACHE_TTL_S", "60"), 60))
+    now = time.monotonic()
+    if now < float(_LOW_QUALITY_CACHE.get("expires_at") or 0):
+        return set(_LOW_QUALITY_CACHE.get("doc_ids") or set()), set(_LOW_QUALITY_CACHE.get("version_ids") or set())
+
+    doc_ids: set[str] = set()
+    version_ids: set[str] = set()
+    if not _env_enabled("HYBRID_LOW_QUALITY_DOC_PENALTY_ENABLED", default=True):
+        _LOW_QUALITY_CACHE.update({"expires_at": now + ttl_s, "doc_ids": doc_ids, "version_ids": version_ids})
+        return doc_ids, version_ids
+
+    try:
+        from app.services.doc_registry import build_doc_registry_from_env
+
+        registry = build_doc_registry_from_env()
+        scan_limit = max(100, _safe_int(os.getenv("HYBRID_LOW_QUALITY_SCAN_LIMIT", "2000"), 2000))
+        rows = registry.list_versions(statuses=["processed"], limit=scan_limit)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            notes = row.get("notes") if isinstance(row.get("notes"), dict) else {}
+            quality = notes.get("quality_gate") if isinstance(notes, dict) and isinstance(notes.get("quality_gate"), dict) else {}
+            grade = str((quality or {}).get("grade") or "").strip().upper()
+            score = _safe_float((quality or {}).get("score"), 0.0)
+            text_len = _safe_int((quality or {}).get("text_len"), 0)
+            chunk_count = _safe_int((notes or {}).get("chunks"), 0)
+            dropped_short = _safe_int(((notes or {}).get("chunk_filter_stats") or {}).get("dropped_short"), 0)
+            low_quality = (
+                grade in {"D", "F"}
+                or (grade == "C" and (text_len <= 200 or chunk_count <= 3 or dropped_short >= max(chunk_count, 2)))
+                or (score > 0 and score < 20 and chunk_count <= 4)
+            )
+            if not low_quality:
+                continue
+            doc_id = str(row.get("doc_id") or "").strip()
+            version_id = str(row.get("id") or "").strip()
+            if doc_id:
+                doc_ids.add(doc_id)
+            if version_id:
+                version_ids.add(version_id)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("low_quality_targets_load_failed error=%s", str(exc))
+
+    _LOW_QUALITY_CACHE.update({"expires_at": now + ttl_s, "doc_ids": doc_ids, "version_ids": version_ids})
+    return doc_ids, version_ids
+
+
+def _drop_low_quality_sparse_hits(
+    sparse_hits: list[dict[str, Any]],
+    selected_doc_ids: set[str],
+    selected_version_ids: set[str],
+) -> list[dict[str, Any]]:
+    if not sparse_hits:
+        return sparse_hits
+    if selected_doc_ids or selected_version_ids:
+        return sparse_hits
+    low_docs, low_versions = _low_quality_targets()
+    if not low_docs and not low_versions:
+        return sparse_hits
+    kept: list[dict[str, Any]] = []
+    for hit in sparse_hits:
+        payload = (hit or {}).get("payload") or {}
+        doc_id = str(payload.get("doc_id") or "").strip()
+        version_id = str(payload.get("version_id") or "").strip()
+        if (doc_id and doc_id in low_docs) or (version_id and version_id in low_versions):
+            continue
+        kept.append(hit)
+    return kept
+
+
 def _keyword_score(text: str, terms: list[str]) -> float:
     if not text or not terms:
         return 0.0
@@ -853,6 +980,8 @@ def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[
     question_norm = re.sub(r"\s+", "", str(question or "").lower())
     table_query = _is_table_query(question)
     listing_query = _is_listing_query(question)
+    query_doc_type = _query_doc_type_prior(question)
+    low_docs, low_versions = _low_quality_targets()
     scored: list[tuple[float, dict[str, Any]]] = []
 
     for idx, hit in enumerate(hits):
@@ -860,6 +989,9 @@ def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[
         text = _payload_search_text(payload)
         text_norm = re.sub(r"\s+", "", text.lower())
         doc_name_upper = str(payload.get("doc_name") or "").strip().upper()
+        doc_type = str(payload.get("doc_type") or "").strip()
+        doc_id = str(payload.get("doc_id") or "").strip()
+        version_id = str(payload.get("version_id") or "").strip()
         standard_no_upper = str(payload.get("standard_no") or "").strip().upper()
         clause_payload = str(payload.get("clause_id") or payload.get("clause_no") or payload.get("article_no") or "").strip()
 
@@ -910,6 +1042,12 @@ def _post_keyword_boost_hits(question: str, hits: list[dict[str, Any]]) -> list[
             exact += 1.2
         if route == "sparse":
             exact += 0.8
+            if not doc_name_upper:
+                exact -= 2.5
+        if query_doc_type and doc_type == query_doc_type:
+            exact += 2.5
+        if (doc_id and doc_id in low_docs) or (version_id and version_id in low_versions):
+            exact -= float(os.getenv("HYBRID_LOW_QUALITY_DOC_PENALTY", "6.0"))
         if listing_query and source_type == "section_summary":
             # Listing-style questions should prioritize concrete clause body.
             exact -= 1.2
@@ -1300,6 +1438,9 @@ def _normalize_route_hits(items: list[dict[str, Any]], route: str) -> list[dict[
             "source_path": str(item.get("source_path") or ""),
             "source_type": str(item.get("source_type") or ""),
             "page_type": str(item.get("page_type") or ""),
+            "version_id": str(item.get("version_id") or ""),
+            "doc_type": str(item.get("doc_type") or ""),
+            "standard_no": str(item.get("standard_no") or ""),
             "table_id": item.get("table_id"),
             "row_index": item.get("row_index"),
             "clause_id": item.get("clause_id") or item.get("clause_no"),
@@ -1353,6 +1494,12 @@ def hybrid_search(
 ) -> dict[str, Any]:
     parsed_filter, sparse_query, dense_query_text = parse_filter_spec(question, entity_index)
     filter_json = _merge_filters(parsed_filter, search_filter)
+    query_doc_type = _query_doc_type_prior(question)
+    if query_doc_type and not _has_doc_scope_filter(filter_json):
+        filter_json = _merge_filters(
+            filter_json,
+            {"must": [{"key": "doc_type", "match": {"value": query_doc_type}}]},
+        )
     clause_hits = extract_clause_ids(question)
     chapter_prefixes = _chapter_prefixes_from_question(question=question, clause_hits=clause_hits)
     if chapter_prefixes:
@@ -1542,6 +1689,12 @@ def hybrid_search(
             degraded_routes["sparse"] = str(exc)
 
     sparse_hits = _normalize_route_hits(sparse_candidates, route="sparse")
+    scoped_doc_ids, scoped_version_ids = _doc_scope_from_filter(filter_json)
+    sparse_hits = _drop_low_quality_sparse_hits(
+        sparse_hits=sparse_hits,
+        selected_doc_ids=scoped_doc_ids,
+        selected_version_ids=scoped_version_ids,
+    )
     if sparse_hits:
         route_lists.append(sparse_hits)
     route_counts["sparse"] = len(sparse_hits)

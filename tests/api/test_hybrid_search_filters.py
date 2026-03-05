@@ -946,6 +946,95 @@ class TestHybridSearchFilters(unittest.TestCase):
             os.environ.clear()
             os.environ.update(old)
 
+    def test_hybrid_search_suppresses_low_quality_sparse_doc_in_global_scope(self) -> None:
+        class _RepoOnlyDense:
+            def search(self, query_vector, filter_json=None, limit=5):
+                return []
+
+            def keyword_search(self, query_text, filter_json=None, limit=20):
+                return []
+
+            def delete_by_version(self, version_id: str):
+                return None
+
+        old = dict(os.environ)
+        os.environ["ENABLE_RERANK"] = "0"
+        os.environ["ENABLE_PG_BM25"] = "0"
+        os.environ["ENABLE_SIRCHMUNK"] = "1"
+        os.environ["HYBRID_POST_KEYWORD_BOOST"] = "0"
+        os.environ["HYBRID_KEYWORD_FALLBACK_ONLY"] = "0"
+        try:
+            with patch(
+                "app.services.search_service.SirchmunkClient.search",
+                return_value=[
+                    {"doc_id": "doc_low", "page_no": 1, "excerpt": "安装规定", "score": 9.0},
+                    {"doc_id": "doc_good", "page_no": 1, "excerpt": "安装规定", "score": 8.0},
+                ],
+            ), patch(
+                "app.services.search_service._low_quality_targets",
+                return_value=({"doc_low"}, set()),
+            ):
+                result = hybrid_search(
+                    question="变压器安装规定",
+                    repo=_RepoOnlyDense(),
+                    entity_index=DummyEntityIndex(),
+                    top_k=5,
+                )
+            doc_ids = [str(c.get("doc_id") or "") for c in result["citations"]]
+            self.assertIn("doc_good", doc_ids)
+            self.assertNotIn("doc_low", doc_ids)
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
+    def test_hybrid_search_applies_query_doc_type_prefilter(self) -> None:
+        repo = InMemoryQdrantRepo()
+        repo.upsert(
+            point_id="spec_1",
+            vector=[0.1, 0.2],
+            payload={
+                "doc_id": "doc_spec",
+                "version_id": "ver_spec",
+                "doc_name": "spec.pdf",
+                "doc_type": "规范规程",
+                "page_start": 1,
+                "page_end": 1,
+                "excerpt": "安装施工验收规范要求",
+                "chunk_text": "安装施工验收规范要求",
+            },
+        )
+        repo.upsert(
+            point_id="bid_1",
+            vector=[0.2, 0.3],
+            payload={
+                "doc_id": "doc_bid",
+                "version_id": "ver_bid",
+                "doc_name": "bid.pdf",
+                "doc_type": "投标文件",
+                "page_start": 1,
+                "page_end": 1,
+                "excerpt": "安装施工验收规范要求",
+                "chunk_text": "安装施工验收规范要求",
+            },
+        )
+
+        old = dict(os.environ)
+        os.environ["ENABLE_RERANK"] = "0"
+        os.environ["HYBRID_POST_KEYWORD_BOOST"] = "0"
+        try:
+            result = hybrid_search(
+                question="安装施工验收规范有哪些要求",
+                repo=repo,
+                entity_index=DummyEntityIndex(),
+                top_k=5,
+            )
+            doc_ids = {str(c.get("doc_id") or "") for c in result["citations"]}
+            self.assertIn("doc_spec", doc_ids)
+            self.assertNotIn("doc_bid", doc_ids)
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
 
 if __name__ == "__main__":
     unittest.main()
