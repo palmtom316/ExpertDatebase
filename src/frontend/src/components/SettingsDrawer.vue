@@ -64,7 +64,7 @@
           <div class="form-header"><h3>向量化模型</h3></div>
           <div class="form-grid">
             <label class="form-field"><span>Provider</span>
-              <select v-model="local.embedding_provider"><option value="stub">stub</option><option value="openai">openai</option></select>
+              <select v-model="local.embedding_provider"><option value="auto">auto</option><option value="openai">openai</option><option value="stub">stub</option></select>
             </label>
             <label class="form-field"><span>Model</span><input v-model.trim="local.embedding_model" placeholder="text-embedding-3-small" /></label>
             <label class="form-field"><span>API Base</span><input v-model.trim="local.embedding_base_url" placeholder="https://api.openai.com/v1" /></label>
@@ -83,7 +83,7 @@
           <div class="form-header"><h3>重排模型 (可选)</h3></div>
           <div class="form-grid">
             <label class="form-field"><span>Provider</span>
-              <select v-model="local.rerank_provider"><option value="stub">stub</option><option value="openai">openai</option><option value="local">local</option></select>
+              <select v-model="local.rerank_provider"><option value="auto">auto</option><option value="openai">openai</option><option value="local">local</option><option value="stub">stub</option></select>
             </label>
             <label class="form-field"><span>Model</span><input v-model.trim="local.rerank_model" placeholder="BAAI/bge-reranker-v2-m3" /></label>
             <label class="form-field"><span>API Base</span><input v-model.trim="local.rerank_base_url" placeholder="https://api.openai.com/v1" /></label>

@@ -789,8 +789,40 @@ async function startEvalRun() {
       }),
     });
     if (!resp.ok) throw new Error(`${resp.status}`);
+    const llmEvalPayload = await resp.json();
+    const llmRunId = llmEvalPayload?.run?.id || "-";
+    let retrievalSummary = null;
+    try {
+      const retrievalResp = await fetch(`${API_BASE}/api/admin/eval/retrieval/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          top_k: 10,
+          embedding_provider: config.embedding_provider,
+          embedding_api_key: config.embedding_api_key,
+          embedding_model: config.embedding_model,
+          embedding_base_url: config.embedding_base_url,
+          rerank_provider: config.rerank_provider,
+          rerank_api_key: config.rerank_api_key,
+          rerank_model: config.rerank_model,
+          rerank_base_url: config.rerank_base_url,
+        }),
+      });
+      if (retrievalResp.ok) {
+        const payload = await retrievalResp.json();
+        retrievalSummary = payload?.item || null;
+      }
+    } catch {
+      retrievalSummary = null;
+    }
     setUploadMessage("评测任务已启动", "ok");
-    pushAssistantMessage("评测任务已启动。");
+    if (retrievalSummary) {
+      const hit10 = Number(retrievalSummary.hit_at_10 || 0).toFixed(3);
+      const mrr = Number(retrievalSummary.mrr || 0).toFixed(3);
+      pushAssistantMessage(`评测任务已启动（LLM Run=${llmRunId}）。检索评测已执行：Hit@10=${hit10}，MRR=${mrr}。`);
+    } else {
+      pushAssistantMessage(`评测任务已启动（LLM Run=${llmRunId}）。检索评测未执行或数据集不可用。`);
+    }
     await loadLLMQuality();
   } catch (error) {
     setUploadMessage(`启动评测失败：${error.message}`, "error");
@@ -823,17 +855,13 @@ async function reprocessDoc(item) {
   const confirmed = window.confirm(buildReprocessConfirmMessage(item));
   if (!confirmed) return;
   const runtime = collectSettings();
-  if (!runtime.mineru_api_base || !runtime.mineru_api_key) {
-    setUploadMessage("请先在 API 设置中填写 OCR API Base 与 OCR API Key", "error");
-    pushAssistantMessage("重新解析前需要先填写 OCR API 配置。");
-    return;
-  }
   try {
     const resp = await fetch(`${API_BASE}/api/admin/jobs/reprocess`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         version_id: item.version_id,
+        reuse_mineru_artifacts: true,
         mineru_api_base: runtime.mineru_api_base,
         mineru_api_key: runtime.mineru_api_key,
         llm_provider: runtime.llm_provider,
