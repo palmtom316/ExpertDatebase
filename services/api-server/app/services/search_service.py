@@ -286,7 +286,7 @@ class QdrantHttpRepo:
 
 class SimpleEmbeddingClient:
     def __init__(self, dim: int | None = None) -> None:
-        env_dim = str(os.getenv("EMBEDDING_DIM") or "").strip()
+        env_dim = str(os.getenv("EMBEDDING_DIM") or os.getenv("EMBEDDING_DIMENSIONS") or "").strip()
         if dim is not None:
             self.dim = int(dim)
             self._stub_dim_pinned = True
@@ -301,13 +301,34 @@ class SimpleEmbeddingClient:
         self._remote_stub_dim_probed = False
         self._last_call_meta: dict[str, Any] = {}
 
+    def _default_base_url(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "https://api.siliconflow.cn/v1"
+        return "https://api.openai.com/v1"
+
+    def _default_model(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "Qwen/Qwen3-Embedding-8B"
+        return "text-embedding-3-small"
+
     def _normalize_token(self, raw: str) -> str:
         token = str(raw or "").strip()
         if token.lower().startswith("bearer "):
             token = token.split(" ", 1)[1].strip()
         return token
 
-    def _resolve_runtime(self, runtime_config: dict[str, Any] | None = None) -> dict[str, str]:
+    def _resolve_dimensions(self, runtime_config: dict[str, Any] | None = None) -> int | None:
+        runtime = runtime_config or {}
+        raw = str(runtime.get("embedding_dimensions") or os.getenv("EMBEDDING_DIMENSIONS") or "").strip()
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+        except Exception:  # noqa: BLE001
+            return None
+        return value if value > 0 else None
+
+    def _resolve_runtime(self, runtime_config: dict[str, Any] | None = None) -> dict[str, str | int | None]:
         runtime = runtime_config or {}
         api_key = self._normalize_token(
             str(
@@ -320,21 +341,24 @@ class SimpleEmbeddingClient:
         provider = str(runtime.get("embedding_provider") or os.getenv("EMBEDDING_PROVIDER", "auto")).strip().lower()
         if provider == "auto":
             provider = "openai" if api_key else "stub"
+        default_base_url = self._default_base_url(provider)
+        default_model = self._default_model(provider)
         return {
             "provider": provider,
             "api_key": api_key,
             "base_url": str(
                 runtime.get("embedding_base_url")
                 or os.getenv("EMBEDDING_BASE_URL")
-                or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+                or os.getenv("OPENAI_BASE_URL", default_base_url)
             )
             .strip()
             .rstrip("/"),
             "model": str(
                 runtime.get("embedding_model")
                 or os.getenv("EMBEDDING_MODEL")
-                or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+                or os.getenv("OPENAI_EMBEDDING_MODEL", default_model)
             ).strip(),
+            "dimensions": self._resolve_dimensions(runtime_config=runtime),
         }
 
     def pop_last_call_meta(self) -> dict[str, Any]:
@@ -422,13 +446,23 @@ class SimpleEmbeddingClient:
             values = [v / norm for v in values]
         return values
 
-    def _openai_compatible(self, text: str, api_key: str, base_url: str, model: str) -> list[float]:
+    def _openai_compatible(
+        self,
+        text: str,
+        api_key: str,
+        base_url: str,
+        model: str,
+        dimensions: int | None = None,
+    ) -> list[float]:
         if not api_key:
             raise RuntimeError("embedding_api_key is required when embedding_provider=openai")
+        payload: dict[str, Any] = {"model": model, "input": text}
+        if dimensions is not None:
+            payload["dimensions"] = int(dimensions)
         resp = requests.post(
             f"{base_url}/embeddings",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": model, "input": text},
+            json=payload,
             timeout=self.timeout_s,
         )
         resp.raise_for_status()
@@ -440,7 +474,7 @@ class SimpleEmbeddingClient:
 
     def embed_text(self, text: str, runtime_config: dict[str, Any] | None = None) -> list[float]:
         cfg = self._resolve_runtime(runtime_config=runtime_config)
-        provider = cfg["provider"] or "stub"
+        provider = str(cfg["provider"] or "stub")
         strict_fallback = self._is_strict_fallback(runtime_config=runtime_config)
         self._last_call_meta = {
             "provider": provider,
@@ -448,14 +482,16 @@ class SimpleEmbeddingClient:
             "used_stub": False,
             "fallback_reason": "",
             "strict": bool(strict_fallback),
+            "dimensions": cfg.get("dimensions"),
         }
         try:
-            if provider == "openai":
+            if provider in {"openai", "siliconflow"}:
                 vec = self._openai_compatible(
                     text=text,
-                    api_key=cfg["api_key"],
-                    base_url=cfg["base_url"],
-                    model=cfg["model"],
+                    api_key=str(cfg["api_key"] or ""),
+                    base_url=str(cfg["base_url"] or ""),
+                    model=str(cfg["model"] or ""),
+                    dimensions=cfg.get("dimensions") if isinstance(cfg.get("dimensions"), int) else None,
                 )
                 self._last_call_meta.update({"used_stub": False, "fallback_reason": ""})
                 return vec
@@ -491,6 +527,16 @@ class RuntimeRerankClient:
     def __init__(self) -> None:
         self.timeout_s = float(os.getenv("RERANK_HTTP_TIMEOUT_S", "20"))
 
+    def _default_base_url(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "https://api.siliconflow.cn/v1"
+        return "https://api.openai.com/v1"
+
+    def _default_model(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "Qwen/Qwen3-Reranker-8B"
+        return "BAAI/bge-reranker-v2-m3"
+
     def _normalize_token(self, raw: str) -> str:
         token = str(raw or "").strip()
         if token.lower().startswith("bearer "):
@@ -510,15 +556,17 @@ class RuntimeRerankClient:
         provider = str(runtime.get("rerank_provider") or os.getenv("RERANK_PROVIDER", "auto")).strip().lower()
         if provider == "auto":
             provider = "openai" if api_key else "stub"
+        default_base_url = self._default_base_url(provider)
+        default_model = self._default_model(provider)
         return {
             "provider": provider,
             "api_key": api_key,
             "base_url": str(
-                runtime.get("rerank_base_url") or os.getenv("RERANK_BASE_URL") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+                runtime.get("rerank_base_url") or os.getenv("RERANK_BASE_URL") or os.getenv("OPENAI_BASE_URL", default_base_url)
             )
             .strip()
             .rstrip("/"),
-            "model": str(runtime.get("rerank_model") or os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")).strip(),
+            "model": str(runtime.get("rerank_model") or os.getenv("RERANK_MODEL", default_model)).strip(),
         }
 
     def _hit_text(self, hit: dict[str, Any]) -> str:
@@ -670,7 +718,7 @@ class RuntimeRerankClient:
         if len(hits) <= 1:
             return hits
         cfg = self._resolve_runtime(runtime_config=runtime_config)
-        if cfg["provider"] == "openai" and cfg["api_key"]:
+        if cfg["provider"] in {"openai", "siliconflow"} and cfg["api_key"]:
             try:
                 return self._native_rerank(question=question, hits=hits, cfg=cfg)
             except Exception:  # noqa: BLE001

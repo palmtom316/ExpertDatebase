@@ -14,6 +14,7 @@ from app.services.eval_executor import execute_eval_run
 from app.services.eval_repo import build_eval_repo_from_env
 from app.services.entity_index import build_entity_index_from_env
 from app.services.retrieval_eval import evaluate_retrieval_samples
+from app.services.runtime_defaults import DEFAULT_RETRIEVAL_EVAL_DATASET, apply_runtime_defaults
 from app.services.search_service import create_search_repo_from_env, hybrid_search
 
 router = APIRouter(
@@ -130,7 +131,7 @@ def run_retrieval_eval(payload: dict | None = None) -> dict:
     if dataset_path_raw:
         dataset_path = Path(dataset_path_raw).expanduser().resolve()
     else:
-        dataset_path = Path("datasets/v1.0/retrieval_eval.jsonl").resolve()
+        dataset_path = DEFAULT_RETRIEVAL_EVAL_DATASET
     if not dataset_path.exists():
         raise HTTPException(status_code=404, detail=f"retrieval dataset not found: {dataset_path}")
 
@@ -138,17 +139,23 @@ def run_retrieval_eval(payload: dict | None = None) -> dict:
     if not samples:
         raise HTTPException(status_code=400, detail="retrieval dataset is empty")
 
-    runtime_config = {
+    runtime_config = apply_runtime_defaults(
+        {
+        "ocr_provider": str(req.get("ocr_provider") or "").strip().lower(),
+        "ocr_api_key": str(req.get("ocr_api_key") or "").strip(),
+        "ocr_model": str(req.get("ocr_model") or "").strip(),
+        "ocr_base_url": str(req.get("ocr_base_url") or "").strip(),
         "embedding_provider": str(req.get("embedding_provider") or "").strip().lower(),
         "embedding_api_key": str(req.get("embedding_api_key") or "").strip(),
         "embedding_model": str(req.get("embedding_model") or "").strip(),
         "embedding_base_url": str(req.get("embedding_base_url") or "").strip(),
+        "embedding_dimensions": str(req.get("embedding_dimensions") or "").strip(),
         "rerank_provider": str(req.get("rerank_provider") or "").strip().lower(),
         "rerank_api_key": str(req.get("rerank_api_key") or "").strip(),
         "rerank_model": str(req.get("rerank_model") or "").strip(),
         "rerank_base_url": str(req.get("rerank_base_url") or "").strip(),
-    }
-    runtime_config = {k: v for k, v in runtime_config.items() if v}
+        }
+    )
 
     repo = create_search_repo_from_env()
     entity_index = build_entity_index_from_env()

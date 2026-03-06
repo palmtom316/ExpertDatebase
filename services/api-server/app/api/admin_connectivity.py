@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 from typing import Any
 
@@ -63,6 +64,57 @@ def _normalize_token(raw: str) -> str:
     return token
 
 
+def _default_base_url(provider: str) -> str:
+    if provider == "siliconflow":
+        return "https://api.siliconflow.cn/v1"
+    return "https://api.openai.com/v1"
+
+
+def _default_embedding_model(provider: str) -> str:
+    if provider == "siliconflow":
+        return "Qwen/Qwen3-Embedding-8B"
+    return "text-embedding-3-small"
+
+
+def _default_rerank_model(provider: str) -> str:
+    if provider == "siliconflow":
+        return "Qwen/Qwen3-Reranker-8B"
+    return "BAAI/bge-reranker-v2-m3"
+
+
+def _default_ocr_model(provider: str) -> str:
+    if provider == "siliconflow":
+        return "deepseek-ai/DeepSeek-OCR"
+    return "gpt-4o-mini"
+
+
+def _extract_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item.strip())
+                continue
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or item.get("content") or "").strip()
+            if text:
+                parts.append(text)
+        return "\n".join(x for x in parts if x).strip()
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("content") or "").strip()
+    return ""
+
+
+def _tiny_png_data_url() -> str:
+    png_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJklEQVR4nO3NMQ0AAAwDoPo33arYsQQMkB6LQCAQCAQCgUAg+BIMi1X0pjxKe0gAAAAASUVORK5CYII="
+    )
+    return f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+
+
 def _build_mineru_headers(api_key: str, token: str, json_mode: bool = False) -> dict[str, str]:
     headers: dict[str, str] = {}
     if api_key:
@@ -115,6 +167,9 @@ def _test_mineru(payload: dict[str, Any]) -> dict[str, Any]:
     base = _s(payload, "mineru_api_base").rstrip("/")
     api_key = _normalize_token(_s(payload, "mineru_api_key"))
     token = _s(payload, "mineru_token")
+    ocr_provider = _s(payload, "ocr_provider").lower()
+    if not base and ocr_provider in {"openai", "siliconflow"}:
+        return _test_ocr(payload)
     if not base:
         return _fail(target="mineru", message="mineru_api_base 不能为空")
 
@@ -198,6 +253,59 @@ def _test_mineru(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _test_ocr(payload: dict[str, Any]) -> dict[str, Any]:
+    provider = _s(payload, "ocr_provider").lower() or "stub"
+    api_key = _normalize_token(_s(payload, "ocr_api_key"))
+    model = _s(payload, "ocr_model") or _default_ocr_model(provider)
+    base_url = (_s(payload, "ocr_base_url") or _default_base_url(provider)).rstrip("/")
+
+    if provider == "stub":
+        return _ok(target="mineru", message="OCR 联通成功(stub)", detail={"provider": "stub", "mode": "ocr_stub"})
+    if provider not in {"openai", "siliconflow"}:
+        return _fail(target="mineru", message=f"ocr_provider 不支持: {provider}", detail={"provider": provider})
+    if not api_key:
+        return _fail(target="mineru", message="ocr_api_key 不能为空", detail={"provider": provider})
+
+    try:
+        resp = requests.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "请识别这张图中的文本，只回复识别结果。"},
+                            {"type": "image_url", "image_url": {"url": _tiny_png_data_url()}},
+                        ],
+                    }
+                ],
+                "temperature": 0,
+                "max_tokens": 64,
+            },
+            timeout=float(os.getenv("OCR_HTTP_TIMEOUT_S", "30")),  # nosec B113
+        )
+        _raise_for_status_with_body(resp)
+        body = resp.json()
+        content = (((body.get("choices") or [{}])[0]).get("message") or {}).get("content")
+        extracted = _extract_message_text(content)
+        if not extracted:
+            raise RuntimeError("empty ocr completion response")
+    except Exception as exc:  # noqa: BLE001
+        return _fail(
+            target="mineru",
+            message=f"OCR 联通失败: {exc}",
+            detail={"provider": provider, "model": model, "base_url": base_url, "mode": "ocr_chat"},
+        )
+
+    return _ok(
+        target="mineru",
+        message="OCR 联通成功",
+        detail={"provider": provider, "model": model, "base_url": base_url, "mode": "ocr_chat"},
+    )
+
+
 def _test_llm(payload: dict[str, Any]) -> dict[str, Any]:
     runtime_config = {
         "llm_provider": _s(payload, "llm_provider").lower(),
@@ -260,24 +368,30 @@ def _test_llm(payload: dict[str, Any]) -> dict[str, Any]:
 def _test_embedding(payload: dict[str, Any]) -> dict[str, Any]:
     provider = _s(payload, "embedding_provider").lower() or "auto"
     api_key = _normalize_token(_s(payload, "embedding_api_key"))
-    model = _s(payload, "embedding_model") or "text-embedding-3-small"
-    base_url = (_s(payload, "embedding_base_url") or "https://api.openai.com/v1").rstrip("/")
+    model = _s(payload, "embedding_model") or _default_embedding_model(provider)
+    base_url = (_s(payload, "embedding_base_url") or _default_base_url(provider)).rstrip("/")
+    embedding_dimensions = _s(payload, "embedding_dimensions")
 
     if provider == "auto":
         provider = "openai" if api_key else "stub"
+        model = _s(payload, "embedding_model") or _default_embedding_model(provider)
+        base_url = (_s(payload, "embedding_base_url") or _default_base_url(provider)).rstrip("/")
 
     if provider == "stub":
         return _ok(target="embedding", message="Embedding 联通成功(stub)", detail={"provider": "stub"})
-    if provider != "openai":
+    if provider not in {"openai", "siliconflow"}:
         return _fail(target="embedding", message=f"embedding_provider 不支持: {provider}", detail={"provider": provider})
     if not api_key:
         return _fail(target="embedding", message="embedding_api_key 不能为空", detail={"provider": provider})
 
     try:
+        payload_json: dict[str, Any] = {"model": model, "input": "connectivity-test"}
+        if embedding_dimensions:
+            payload_json["dimensions"] = int(embedding_dimensions)
         resp = requests.post(
             f"{base_url}/embeddings",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": model, "input": "connectivity-test"},
+            json=payload_json,
             timeout=float(os.getenv("EMBEDDING_HTTP_TIMEOUT_S", "15")),  # nosec B113
         )
         _raise_for_status_with_body(resp)
@@ -302,15 +416,17 @@ def _test_embedding(payload: dict[str, Any]) -> dict[str, Any]:
 def _test_rerank(payload: dict[str, Any]) -> dict[str, Any]:
     provider = _s(payload, "rerank_provider").lower() or "auto"
     api_key = _normalize_token(_s(payload, "rerank_api_key"))
-    model = _s(payload, "rerank_model") or "BAAI/bge-reranker-v2-m3"
-    base_url = (_s(payload, "rerank_base_url") or "https://api.openai.com/v1").rstrip("/")
+    model = _s(payload, "rerank_model") or _default_rerank_model(provider)
+    base_url = (_s(payload, "rerank_base_url") or _default_base_url(provider)).rstrip("/")
 
     if provider == "auto":
         provider = "openai" if api_key else "stub"
+        model = _s(payload, "rerank_model") or _default_rerank_model(provider)
+        base_url = (_s(payload, "rerank_base_url") or _default_base_url(provider)).rstrip("/")
 
     if provider in {"stub", "local"}:
         return _ok(target="rerank", message=f"Rerank 联通成功({provider})", detail={"provider": provider})
-    if provider != "openai":
+    if provider not in {"openai", "siliconflow"}:
         return _fail(target="rerank", message=f"rerank_provider 不支持: {provider}", detail={"provider": provider})
     if not api_key:
         return _fail(target="rerank", message="rerank_api_key 不能为空", detail={"provider": provider})
@@ -361,11 +477,11 @@ def _test_vl(payload: dict[str, Any]) -> dict[str, Any]:
     provider = _s(payload, "vl_provider").lower() or "stub"
     api_key = _normalize_token(_s(payload, "vl_api_key") or _s(payload, "llm_api_key"))
     model = _s(payload, "vl_model") or "gpt-4o-mini"
-    base_url = (_s(payload, "vl_base_url") or _s(payload, "llm_base_url") or "https://api.openai.com/v1").rstrip("/")
+    base_url = (_s(payload, "vl_base_url") or _s(payload, "llm_base_url") or _default_base_url(provider)).rstrip("/")
 
     if provider == "stub":
         return _ok(target="vl", message="VL 联通成功(stub)", detail={"provider": "stub"})
-    if provider != "openai":
+    if provider not in {"openai", "siliconflow"}:
         return _fail(target="vl", message=f"vl_provider 不支持: {provider}", detail={"provider": provider})
     if not api_key:
         return _fail(target="vl", message="vl_api_key 不能为空", detail={"provider": provider})
@@ -385,7 +501,7 @@ def _test_vl(payload: dict[str, Any]) -> dict[str, Any]:
         _raise_for_status_with_body(resp)
         body = resp.json()
         content = (((body.get("choices") or [{}])[0]).get("message") or {}).get("content")
-        if not str(content or "").strip():
+        if not _extract_message_text(content):
             raise RuntimeError("empty vl completion response")
     except Exception as exc:  # noqa: BLE001
         return _fail(

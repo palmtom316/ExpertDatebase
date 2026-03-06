@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir \
 
 COPY services/api-server /app/services/api-server
 COPY shared /app/shared
+COPY datasets /app/datasets
 
 ENV PYTHONPATH=/app/services/api-server:/app
 

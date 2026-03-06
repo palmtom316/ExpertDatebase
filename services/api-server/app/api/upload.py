@@ -15,6 +15,7 @@ from slowapi.util import get_remote_address
 
 from app.services.auth import ALL_ROLES, require_roles
 from app.services.doc_registry import DocRegistry, build_doc_registry_from_env
+from app.services.runtime_defaults import apply_runtime_defaults
 from app.services.storage import ObjectStorage, build_storage_from_env
 from app.services.task_queue import TaskQueue, build_task_queue_from_env
 
@@ -146,8 +147,13 @@ def upload_pdf_bytes(
         status = str(item.get("status") or "").strip().lower()
         if status != "processed":
             return False
-        # Only auto-reprocess when MinerU runtime credentials are present.
-        return bool(str(runtime.get("mineru_api_base") or "").strip() and str(runtime.get("mineru_api_key") or "").strip())
+        # Auto-reprocess when an OCR parser runtime is provided, regardless of
+        # whether it is legacy MinerU or OpenAI-compatible OCR.
+        has_ocr_runtime = bool(str(runtime.get("ocr_provider") or "").strip())
+        has_ocr_auth = bool(str(runtime.get("ocr_api_key") or "").strip())
+        has_ocr_base = bool(str(runtime.get("ocr_base_url") or "").strip())
+        has_mineru_runtime = bool(str(runtime.get("mineru_api_base") or "").strip() and str(runtime.get("mineru_api_key") or "").strip())
+        return has_mineru_runtime or (has_ocr_runtime and has_ocr_auth and has_ocr_base)
 
     content_hash = hashlib.sha256(content).hexdigest()
     reusable_statuses = ["processed", "processing", "uploaded", "retry_queued"]
@@ -255,6 +261,10 @@ async def upload(
     request: Request,
     file: UploadFile = File(...),
     doc_type: str | None = Form(default=None),
+    ocr_provider: str | None = Form(default=None),
+    ocr_api_key: str | None = Form(default=None),
+    ocr_model: str | None = Form(default=None),
+    ocr_base_url: str | None = Form(default=None),
     mineru_api_base: str | None = Form(default=None),
     mineru_api_key: str | None = Form(default=None),
     mineru_token: str | None = Form(default=None),
@@ -267,6 +277,7 @@ async def upload(
     embedding_api_key: str | None = Form(default=None),
     embedding_model: str | None = Form(default=None),
     embedding_base_url: str | None = Form(default=None),
+    embedding_dimensions: str | None = Form(default=None),
     rerank_provider: str | None = Form(default=None),
     rerank_api_key: str | None = Form(default=None),
     rerank_model: str | None = Form(default=None),
@@ -294,7 +305,12 @@ async def upload(
         content_type=file.content_type,
         content=content,
     )
-    runtime_config = {
+    runtime_config = apply_runtime_defaults(
+        {
+        "ocr_provider": (ocr_provider or "").strip().lower(),
+        "ocr_api_key": (ocr_api_key or "").strip(),
+        "ocr_model": (ocr_model or "").strip(),
+        "ocr_base_url": (ocr_base_url or "").strip(),
         "mineru_api_base": (mineru_api_base or "").strip(),
         "mineru_api_key": (mineru_api_key or "").strip(),
         "mineru_token": (mineru_token or "").strip(),
@@ -307,6 +323,7 @@ async def upload(
         "embedding_api_key": (embedding_api_key or "").strip(),
         "embedding_model": (embedding_model or "").strip(),
         "embedding_base_url": (embedding_base_url or "").strip(),
+        "embedding_dimensions": (embedding_dimensions or "").strip(),
         "rerank_provider": (rerank_provider or "").strip().lower(),
         "rerank_api_key": (rerank_api_key or "").strip(),
         "rerank_model": (rerank_model or "").strip(),
@@ -315,8 +332,8 @@ async def upload(
         "vl_api_key": (vl_api_key or "").strip(),
         "vl_model": (vl_model or "").strip(),
         "vl_base_url": (vl_base_url or "").strip(),
-    }
-    runtime_config = {k: v for k, v in runtime_config.items() if v}
+        }
+    )
 
     return upload_pdf_bytes(
         filename=file.filename or "unknown.pdf",

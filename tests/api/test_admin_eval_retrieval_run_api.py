@@ -38,7 +38,13 @@ def test_admin_retrieval_eval_run_success(monkeypatch: pytest.MonkeyPatch, tmp_p
     ) -> dict:
         assert question
         assert top_k == 10
-        assert (runtime_config or {}).get("embedding_provider") == "auto"
+        assert (runtime_config or {}).get("ocr_provider") == "siliconflow"
+        assert (runtime_config or {}).get("ocr_model") == "deepseek-ai/DeepSeek-OCR"
+        assert (runtime_config or {}).get("embedding_provider") == "siliconflow"
+        assert (runtime_config or {}).get("embedding_model") == "Qwen/Qwen3-Embedding-8B"
+        assert (runtime_config or {}).get("embedding_dimensions") == "4096"
+        assert (runtime_config or {}).get("rerank_provider") == "siliconflow"
+        assert (runtime_config or {}).get("rerank_model") == "Qwen/Qwen3-Reranker-8B"
         return {
             "hits": [
                 {
@@ -63,7 +69,7 @@ def test_admin_retrieval_eval_run_success(monkeypatch: pytest.MonkeyPatch, tmp_p
     client = TestClient(app)
     resp = client.post(
         "/api/admin/eval/retrieval/run",
-        json={"dataset_path": str(dataset), "top_k": 10, "embedding_provider": "auto"},
+        json={"dataset_path": str(dataset), "top_k": 10},
     )
     assert resp.status_code == 200
     payload = resp.json()["item"]

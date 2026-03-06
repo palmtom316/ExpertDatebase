@@ -15,6 +15,7 @@ if str(SERVICE_ROOT) not in sys.path:
 
 from app.services.retrieval_eval import evaluate_retrieval_samples
 from app.services.entity_index import build_entity_index_from_env
+from app.services.runtime_defaults import DEFAULT_RETRIEVAL_EVAL_DATASET, apply_runtime_defaults
 from app.services.search_service import create_search_repo_from_env, hybrid_search
 
 
@@ -33,7 +34,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate retrieval quality (Hit@5/10, MRR).")
-    parser.add_argument("--dataset", required=True, help="Path to JSONL dataset.")
+    parser.add_argument(
+        "--dataset",
+        default=str(DEFAULT_RETRIEVAL_EVAL_DATASET),
+        help=f"Path to JSONL dataset (default: {DEFAULT_RETRIEVAL_EVAL_DATASET}).",
+    )
     parser.add_argument("--top-k", type=int, default=10, help="Max hits per query (default: 10).")
     parser.add_argument("--output", default="", help="Optional output JSON path.")
     parser.add_argument("--report", default="", help="Optional report JSON path (for gate checks).")
@@ -41,6 +46,7 @@ def main() -> int:
     parser.add_argument("--embedding-api-key", default="", help="Optional runtime embedding API key override.")
     parser.add_argument("--embedding-model", default="", help="Optional runtime embedding model override.")
     parser.add_argument("--embedding-base-url", default="", help="Optional runtime embedding base URL override.")
+    parser.add_argument("--embedding-dimensions", default="", help="Optional runtime embedding dimensions override.")
     parser.add_argument("--rerank-provider", default="", help="Optional runtime rerank provider override.")
     parser.add_argument("--rerank-api-key", default="", help="Optional runtime rerank API key override.")
     parser.add_argument("--rerank-model", default="", help="Optional runtime rerank model override.")
@@ -57,17 +63,19 @@ def main() -> int:
     repo = create_search_repo_from_env()
     entity_index = build_entity_index_from_env()
     top_k = max(1, int(args.top_k))
-    runtime_config = {
+    runtime_config = apply_runtime_defaults(
+        {
         "embedding_provider": str(args.embedding_provider or "").strip().lower(),
         "embedding_api_key": str(args.embedding_api_key or "").strip(),
         "embedding_model": str(args.embedding_model or "").strip(),
         "embedding_base_url": str(args.embedding_base_url or "").strip(),
+        "embedding_dimensions": str(args.embedding_dimensions or "").strip(),
         "rerank_provider": str(args.rerank_provider or "").strip().lower(),
         "rerank_api_key": str(args.rerank_api_key or "").strip(),
         "rerank_model": str(args.rerank_model or "").strip(),
         "rerank_base_url": str(args.rerank_base_url or "").strip(),
-    }
-    runtime_config = {k: v for k, v in runtime_config.items() if v}
+        }
+    )
 
     def _search(sample: dict[str, Any]) -> list[dict[str, Any]]:
         query = str(sample.get("query") or "").strip()

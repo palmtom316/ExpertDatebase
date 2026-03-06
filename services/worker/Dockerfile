@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir \
     pyyaml \
     requests \
     pypdf \
+    pymupdf \
     redis \
     minio \
     psycopg2-binary

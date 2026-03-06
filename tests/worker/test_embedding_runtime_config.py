@@ -37,17 +37,63 @@ def test_embedding_client_uses_runtime_config(monkeypatch: pytest.MonkeyPatch) -
     vec = client.embed_text(
         "runtime embedding",
         runtime_config={
-            "embedding_provider": "openai",
+            "embedding_provider": "siliconflow",
             "embedding_api_key": "Bearer emb-runtime-key",
-            "embedding_model": "text-embedding-3-small",
-            "embedding_base_url": "https://emb.example.com/v1",
+            "embedding_model": "Qwen/Qwen3-Embedding-8B",
+            "embedding_base_url": "https://api.siliconflow.cn/v1",
+            "embedding_dimensions": "1024",
         },
     )
 
-    assert captured["url"] == "https://emb.example.com/v1/embeddings"
+    assert captured["url"] == "https://api.siliconflow.cn/v1/embeddings"
     assert captured["headers"]["Authorization"] == "Bearer emb-runtime-key"
-    assert captured["json"]["model"] == "text-embedding-3-small"
+    assert captured["json"]["model"] == "Qwen/Qwen3-Embedding-8B"
+    assert captured["json"]["dimensions"] == 1024
     assert isinstance(vec, list) and len(vec) == 3
+
+
+def test_embedding_client_batches_texts(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    class _DummyResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {"embedding": [0.1, -0.1, 0.3]},
+                    {"embedding": [0.2, -0.2, 0.4]},
+                ]
+            }
+
+    def fake_post(url: str, headers: dict, json: dict, timeout: float):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        return _DummyResponse()
+
+    monkeypatch.setattr("worker.embedding_client.requests.post", fake_post)
+
+    client = EmbeddingClient()
+    vectors = client.embed_texts(
+        ["first", "second"],
+        runtime_config={
+            "embedding_provider": "siliconflow",
+            "embedding_api_key": "emb-runtime-key",
+            "embedding_model": "Qwen/Qwen3-Embedding-8B",
+            "embedding_base_url": "https://api.siliconflow.cn/v1",
+        },
+    )
+
+    meta = client.pop_last_call_meta()
+
+    assert captured["json"]["input"] == ["first", "second"]
+    assert len(vectors) == 2
+    assert meta["item_count"] == 2
+    assert meta["request_count"] == 1
 
 
 def test_embedding_stub_dim_follows_qdrant_collection(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -12,6 +12,8 @@ dependencies = [
   "pyyaml",
   "alembic",
   "requests",
+  "pypdf",
+  "pymupdf",
   "redis",
   "minio",
   "psycopg2-binary",

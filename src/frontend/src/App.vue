@@ -798,10 +798,15 @@ async function startEvalRun() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           top_k: 10,
+          ocr_provider: config.ocr_provider,
+          ocr_api_key: config.ocr_api_key,
+          ocr_model: config.ocr_model,
+          ocr_base_url: config.ocr_base_url,
           embedding_provider: config.embedding_provider,
           embedding_api_key: config.embedding_api_key,
           embedding_model: config.embedding_model,
           embedding_base_url: config.embedding_base_url,
+          embedding_dimensions: config.embedding_dimensions,
           rerank_provider: config.rerank_provider,
           rerank_api_key: config.rerank_api_key,
           rerank_model: config.rerank_model,
@@ -862,6 +867,10 @@ async function reprocessDoc(item) {
       body: JSON.stringify({
         version_id: item.version_id,
         reuse_mineru_artifacts: true,
+        ocr_provider: runtime.ocr_provider,
+        ocr_api_key: runtime.ocr_api_key,
+        ocr_model: runtime.ocr_model,
+        ocr_base_url: runtime.ocr_base_url,
         mineru_api_base: runtime.mineru_api_base,
         mineru_api_key: runtime.mineru_api_key,
         llm_provider: runtime.llm_provider,
@@ -872,6 +881,7 @@ async function reprocessDoc(item) {
         embedding_api_key: runtime.embedding_api_key,
         embedding_model: runtime.embedding_model,
         embedding_base_url: runtime.embedding_base_url,
+        embedding_dimensions: runtime.embedding_dimensions,
         rerank_provider: runtime.rerank_provider,
         rerank_api_key: runtime.rerank_api_key,
         rerank_model: runtime.rerank_model,
@@ -1044,6 +1054,10 @@ function buildUploadFormData(file, runtime) {
   const formData = new FormData();
   formData.append("file", file, file.name);
   formData.append("doc_type", selectedUploadDocType.value || "规范规程");
+  if (runtime.ocr_provider) formData.append("ocr_provider", runtime.ocr_provider);
+  if (runtime.ocr_model) formData.append("ocr_model", runtime.ocr_model);
+  if (runtime.ocr_base_url) formData.append("ocr_base_url", runtime.ocr_base_url);
+  if (runtime.ocr_api_key) formData.append("ocr_api_key", runtime.ocr_api_key);
   if (runtime.mineru_api_base) formData.append("mineru_api_base", runtime.mineru_api_base);
   if (runtime.mineru_api_key) formData.append("mineru_api_key", runtime.mineru_api_key);
   if (runtime.llm_provider) formData.append("llm_provider", runtime.llm_provider);
@@ -1054,6 +1068,7 @@ function buildUploadFormData(file, runtime) {
   if (runtime.embedding_api_key) formData.append("embedding_api_key", runtime.embedding_api_key);
   if (runtime.embedding_model) formData.append("embedding_model", runtime.embedding_model);
   if (runtime.embedding_base_url) formData.append("embedding_base_url", runtime.embedding_base_url);
+  if (runtime.embedding_dimensions) formData.append("embedding_dimensions", runtime.embedding_dimensions);
   if (runtime.rerank_provider) formData.append("rerank_provider", runtime.rerank_provider);
   if (runtime.rerank_api_key) formData.append("rerank_api_key", runtime.rerank_api_key);
   if (runtime.rerank_model) formData.append("rerank_model", runtime.rerank_model);
@@ -1208,6 +1223,7 @@ async function sendChat(question) {
         embedding_api_key: runtime.embedding_api_key,
         embedding_model: runtime.embedding_model,
         embedding_base_url: runtime.embedding_base_url,
+        embedding_dimensions: runtime.embedding_dimensions,
         rerank_provider: runtime.rerank_provider,
         rerank_api_key: runtime.rerank_api_key,
         rerank_model: runtime.rerank_model,

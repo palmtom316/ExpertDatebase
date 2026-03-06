@@ -8,6 +8,21 @@ from app.services.doc_registry import DocRegistry
 from app.services.task_queue import TaskQueue
 
 
+def _redact_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key or "").strip().lower()
+            if any(token in key_text for token in ("api_key", "token", "secret", "password")):
+                redacted[key] = "***"
+                continue
+            redacted[key] = _redact_secrets(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
+
+
 def list_failed_versions(registry: DocRegistry, limit: int | None = None) -> list[dict[str, Any]]:
     return registry.list_versions(statuses=["failed"], limit=limit)
 
@@ -20,7 +35,7 @@ def cleanup_failed_versions(registry: DocRegistry, limit: int | None = None) -> 
             status="failed_archived",
             notes={
                 "cleanup_from": "failed",
-                "previous_notes": item.get("notes"),
+                "previous_notes": _redact_secrets(item.get("notes")),
             },
         )
     return {
@@ -57,7 +72,7 @@ def retry_failed_versions(
             status="retry_queued",
             notes={
                 "retry_from": "failed",
-                "previous_notes": item.get("notes"),
+                "previous_notes": _redact_secrets(item.get("notes")),
             },
         )
         retried_ids.append(version_id)
@@ -104,7 +119,7 @@ def reprocess_version(
         status="retry_queued",
         notes={
             "retry_from": prev_status or "unknown",
-            "previous_notes": item.get("notes"),
+            "previous_notes": _redact_secrets(item.get("notes")),
             "trigger": "manual_reprocess",
         },
     )

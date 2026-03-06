@@ -117,6 +117,16 @@ class VLRecognizer:
     def __init__(self) -> None:
         self.timeout_s = float(os.getenv("VL_HTTP_TIMEOUT_S", "30"))
 
+    def _default_base_url(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "https://api.siliconflow.cn/v1"
+        return "https://api.openai.com/v1"
+
+    def _default_model(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "Qwen/Qwen2.5-VL-7B-Instruct"
+        return "gpt-4o-mini"
+
     def _normalize_token(self, raw: str) -> str:
         token = str(raw or "").strip()
         if token.lower().startswith("bearer "):
@@ -126,18 +136,20 @@ class VLRecognizer:
     def _resolve_runtime(self, runtime_config: dict[str, Any] | None) -> dict[str, str]:
         runtime = runtime_config or {}
         provider = str(runtime.get("vl_provider") or runtime.get("llm_provider") or os.getenv("VL_PROVIDER", "stub")).strip().lower()
+        default_base_url = self._default_base_url(provider)
+        default_model = self._default_model(provider)
         api_key = self._normalize_token(str(runtime.get("vl_api_key") or runtime.get("llm_api_key") or os.getenv("VL_API_KEY", "")))
         base_url = str(
             runtime.get("vl_base_url")
             or runtime.get("llm_base_url")
             or os.getenv("VL_BASE_URL")
-            or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            or os.getenv("OPENAI_BASE_URL", default_base_url)
         ).strip()
         model = str(
             runtime.get("vl_model")
             or os.getenv("VL_MODEL")
             or runtime.get("llm_model")
-            or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            or os.getenv("OPENAI_MODEL", default_model)
         ).strip()
         return {
             "provider": provider,

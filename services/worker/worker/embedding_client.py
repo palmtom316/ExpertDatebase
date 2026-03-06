@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+from typing import Any
 
 import requests
 
@@ -15,7 +16,7 @@ _log = logging.getLogger(__name__)
 
 class EmbeddingClient:
     def __init__(self, dim: int = 1024) -> None:
-        env_dim = str(os.getenv("EMBEDDING_DIM") or "").strip()
+        env_dim = str(os.getenv("EMBEDDING_DIM") or os.getenv("EMBEDDING_DIMENSIONS") or "").strip()
         if env_dim:
             self.dim = int(env_dim)
             self._stub_dim_pinned = True
@@ -28,13 +29,34 @@ class EmbeddingClient:
         self._remote_stub_dim_probed = False
         self._last_call_meta: dict[str, object] = {}
 
+    def _default_base_url(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "https://api.siliconflow.cn/v1"
+        return "https://api.openai.com/v1"
+
+    def _default_model(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "Qwen/Qwen3-Embedding-8B"
+        return "text-embedding-3-small"
+
     def _normalize_token(self, raw: str) -> str:
         token = str(raw or "").strip()
         if token.lower().startswith("bearer "):
             token = token.split(" ", 1)[1].strip()
         return token
 
-    def _resolve_runtime(self, runtime_config: dict | None = None) -> dict[str, str]:
+    def _resolve_dimensions(self, runtime_config: dict[str, Any] | None = None) -> int | None:
+        runtime = runtime_config or {}
+        raw = str(runtime.get("embedding_dimensions") or os.getenv("EMBEDDING_DIMENSIONS") or "").strip()
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+        except Exception:  # noqa: BLE001
+            return None
+        return value if value > 0 else None
+
+    def _resolve_runtime(self, runtime_config: dict | None = None) -> dict[str, str | int | None]:
         runtime = runtime_config or {}
         api_key = self._normalize_token(
             str(
@@ -47,21 +69,24 @@ class EmbeddingClient:
         provider = str(runtime.get("embedding_provider") or self.provider or "auto").strip().lower()
         if provider == "auto":
             provider = "openai" if api_key else "stub"
+        default_base_url = self._default_base_url(provider)
+        default_model = self._default_model(provider)
         return {
             "provider": provider,
             "api_key": api_key,
             "base_url": str(
                 runtime.get("embedding_base_url")
                 or os.getenv("EMBEDDING_BASE_URL")
-                or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+                or os.getenv("OPENAI_BASE_URL", default_base_url)
             )
             .strip()
             .rstrip("/"),
             "model": str(
                 runtime.get("embedding_model")
                 or os.getenv("EMBEDDING_MODEL")
-                or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+                or os.getenv("OPENAI_EMBEDDING_MODEL", default_model)
             ).strip(),
+            "dimensions": self._resolve_dimensions(runtime_config=runtime),
         }
 
     def _is_strict_fallback(self, runtime_config: dict | None = None) -> bool:
@@ -150,26 +175,54 @@ class EmbeddingClient:
             values = [v / norm for v in values]
         return values
 
-    def _openai_compatible(self, text: str, api_key: str, base_url: str, model: str) -> list[float]:
+    def _stub_many(self, texts: list[str]) -> list[list[float]]:
+        return [self._stub(text) for text in texts]
+
+    def _openai_compatible(
+        self,
+        input_value: str | list[str],
+        api_key: str,
+        base_url: str,
+        model: str,
+        dimensions: int | None = None,
+    ) -> list[float] | list[list[float]]:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is required for embedding provider")
+        payload: dict[str, Any] = {"model": model, "input": input_value}
+        if dimensions is not None:
+            payload["dimensions"] = int(dimensions)
 
         resp = requests.post(
             f"{base_url}/embeddings",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": model, "input": text},
+            json=payload,
             timeout=self.timeout_s,
         )
         resp.raise_for_status()
         body = resp.json()
-        vec = (((body.get("data") or [{}])[0]).get("embedding") or [])
-        if not isinstance(vec, list) or not vec:
+        data = body.get("data") or []
+        if not isinstance(data, list) or not data:
             raise RuntimeError("empty embedding response")
-        return [float(x) for x in vec]
+        vectors: list[list[float]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            vec = item.get("embedding") or []
+            if not isinstance(vec, list) or not vec:
+                raise RuntimeError("empty embedding vector")
+            vectors.append([float(x) for x in vec])
+        if not vectors:
+            raise RuntimeError("empty embedding response")
+        if isinstance(input_value, str):
+            return vectors[0]
+        return vectors
 
-    def embed_text(self, text: str, runtime_config: dict | None = None) -> list[float]:
+    def embed_texts(self, texts: list[str], runtime_config: dict | None = None) -> list[list[float]]:
+        normalized_texts = [str(text or "") for text in texts]
+        if not normalized_texts:
+            return []
         cfg = self._resolve_runtime(runtime_config=runtime_config)
-        provider = cfg["provider"]
+        provider = str(cfg["provider"] or "stub")
         strict_fallback = self._is_strict_fallback(runtime_config=runtime_config)
         self._last_call_meta = {
             "provider": provider,
@@ -177,18 +230,30 @@ class EmbeddingClient:
             "used_stub": False,
             "fallback_reason": "",
             "strict": bool(strict_fallback),
+            "item_count": len(normalized_texts),
+            "request_count": 1,
+            "dimensions": cfg.get("dimensions"),
         }
 
         try:
-            if provider == "openai":
-                vec = self._openai_compatible(
-                    text=text,
-                    api_key=cfg["api_key"],
-                    base_url=cfg["base_url"],
-                    model=cfg["model"],
+            if provider in {"openai", "siliconflow"}:
+                vectors = self._openai_compatible(
+                    input_value=normalized_texts,
+                    api_key=str(cfg["api_key"] or ""),
+                    base_url=str(cfg["base_url"] or ""),
+                    model=str(cfg["model"] or ""),
+                    dimensions=cfg.get("dimensions") if isinstance(cfg.get("dimensions"), int) else None,
                 )
+                if not isinstance(vectors, list) or not vectors:
+                    raise RuntimeError("empty embedding response")
+                if vectors and isinstance(vectors[0], float):
+                    vectors = [vectors]
+                if len(vectors) != len(normalized_texts):
+                    raise RuntimeError(
+                        f"embedding response count mismatch: expected {len(normalized_texts)} got {len(vectors)}"
+                    )
                 self._last_call_meta.update({"used_stub": False, "fallback_reason": ""})
-                return vec
+                return vectors
         except Exception as exc:  # noqa: BLE001
             fallback_reason = f"openai_failed:{type(exc).__name__}"
             self._last_call_meta.update(
@@ -207,11 +272,15 @@ class EmbeddingClient:
             )
             if strict_fallback:
                 raise RuntimeError(f"embedding failed in strict mode: {exc}") from exc
-            return self._stub(text)
+            return self._stub_many(normalized_texts)
         self._last_call_meta.update(
             {
                 "used_stub": True,
                 "fallback_reason": "provider_stub" if provider == "stub" else "provider_non_openai",
             }
         )
-        return self._stub(text)
+        return self._stub_many(normalized_texts)
+
+    def embed_text(self, text: str, runtime_config: dict | None = None) -> list[float]:
+        vectors = self.embed_texts([text], runtime_config=runtime_config)
+        return vectors[0] if vectors else self._stub(text)

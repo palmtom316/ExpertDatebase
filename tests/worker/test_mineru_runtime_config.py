@@ -352,6 +352,152 @@ def test_page_lines_from_text_merges_single_char_lines() -> None:
     assert any("第一章总则" in line for line in lines)
 
 
+def test_page_needs_ocr_flags_watermark_noise() -> None:
+    client = MinerUClient()
+    page = {
+        "page_no": 1,
+        "blocks": [
+            {
+                "type": "paragraph",
+                "text": "www.bzfxw.com\nwww.bzfxw.com\nhQÆRN«Q www.bzfxw.com QM9N",
+            }
+        ],
+        "tables": [],
+    }
+
+    assert client._page_needs_ocr(page) is True  # noqa: SLF001
+
+
+def test_apply_ocr_repair_repairs_selected_low_quality_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_parse_pdf_with_ocr(self, pdf_bytes: bytes, runtime_config=None, page_numbers=None):  # noqa: ANN001
+        captured["page_numbers"] = page_numbers
+        return {
+            "pages": [
+                {
+                    "page_no": 2,
+                    "blocks": [{"type": "paragraph", "text": "第2页 OCR 正文"}],
+                    "tables": [],
+                    "images": [],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(MinerUClient, "_parse_pdf_with_ocr", fake_parse_pdf_with_ocr)
+    monkeypatch.setenv("OCR_FORCE_FULL_DOC_MIN_BAD_PAGES", "10")
+    monkeypatch.setenv("OCR_FORCE_FULL_DOC_BAD_PAGE_RATIO", "0.8")
+    client = MinerUClient()
+    parsed = {
+        "pages": [
+            {
+                "page_no": 1,
+                "blocks": [
+                    {
+                        "type": "paragraph",
+                        "text": "第一章 总则\n本规范适用于高压电器施工及验收，并规定了安装前检查、基础复核、设备就位、调整试验、交接验收等要求。",
+                    }
+                ],
+                "tables": [],
+            },
+            {"page_no": 2, "blocks": [{"type": "paragraph", "text": "www.bzfxw.com\nhQÆRN«Q www.bzfxw.com QM9N"}], "tables": []},
+            {
+                "page_no": 3,
+                "blocks": [
+                    {
+                        "type": "paragraph",
+                        "text": "第三章 验收\n断路器安装应符合设计要求，安装记录、绝缘试验、机械特性试验和附件检查应完整，且各项结果应满足标准规定。",
+                    }
+                ],
+                "tables": [],
+            },
+        ]
+    }
+
+    out = client._apply_ocr_repair(b"%PDF-1.4 fake", parsed, runtime_config={})  # noqa: SLF001
+
+    assert captured["page_numbers"] == [2]
+    pages = out.get("pages") or []
+    assert "OCR 正文" in pages[1]["blocks"][0]["text"]
+
+
+def test_apply_ocr_repair_escalates_to_full_doc_when_bad_page_ratio_is_high(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_parse_pdf_with_ocr(self, pdf_bytes: bytes, runtime_config=None, page_numbers=None):  # noqa: ANN001
+        captured["page_numbers"] = page_numbers
+        return {
+            "pages": [
+                {"page_no": idx, "blocks": [{"type": "paragraph", "text": f"第{idx}页 OCR 正文"}], "tables": [], "images": []}
+                for idx in range(1, 5)
+            ]
+        }
+
+    monkeypatch.setattr(MinerUClient, "_parse_pdf_with_ocr", fake_parse_pdf_with_ocr)
+    monkeypatch.setenv("OCR_FORCE_FULL_DOC_MIN_BAD_PAGES", "3")
+    monkeypatch.setenv("OCR_FORCE_FULL_DOC_BAD_PAGE_RATIO", "0.5")
+    client = MinerUClient()
+    parsed = {
+        "pages": [
+            {"page_no": 1, "blocks": [{"type": "paragraph", "text": "www.bzfxw.com\nhQÆRN«Q www.bzfxw.com QM9N"}], "tables": []},
+            {"page_no": 2, "blocks": [{"type": "paragraph", "text": "www.bzfxw.com\nhQÆRN«Q www.bzfxw.com QM9N"}], "tables": []},
+            {"page_no": 3, "blocks": [{"type": "paragraph", "text": "www.bzfxw.com\nhQÆRN«Q www.bzfxw.com QM9N"}], "tables": []},
+            {
+                "page_no": 4,
+                "blocks": [
+                    {
+                        "type": "paragraph",
+                        "text": "第四章 施工\n本页文本正常，包含施工准备、设备安装、回路核对、调试和验收资料整理等完整要求，用于验证文档级坏页比例触发整本 OCR。",
+                    }
+                ],
+                "tables": [],
+            },
+        ]
+    }
+
+    out = client._apply_ocr_repair(b"%PDF-1.4 fake", parsed, runtime_config={})  # noqa: SLF001
+
+    assert captured["page_numbers"] is None
+    pages = out.get("pages") or []
+    assert len(pages) == 4
+    assert all("OCR 正文" in (page.get("blocks") or [{}])[0].get("text", "") for page in pages)
+
+
+def test_apply_ocr_repair_full_doc_merge_tolerates_partial_ocr_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_parse_pdf_with_ocr(self, pdf_bytes: bytes, runtime_config=None, page_numbers=None):  # noqa: ANN001
+        captured["page_numbers"] = page_numbers
+        return {
+            "pages": [
+                {"page_no": 1, "blocks": [{"type": "paragraph", "text": "第1页 OCR 正文"}], "tables": [], "images": []},
+                {"page_no": 3, "blocks": [{"type": "paragraph", "text": "第3页 OCR 正文"}], "tables": [], "images": []},
+            ]
+        }
+
+    monkeypatch.setattr(MinerUClient, "_parse_pdf_with_ocr", fake_parse_pdf_with_ocr)
+    monkeypatch.setenv("OCR_FORCE_FULL_DOC_MIN_BAD_PAGES", "2")
+    monkeypatch.setenv("OCR_FORCE_FULL_DOC_BAD_PAGE_RATIO", "0.4")
+    client = MinerUClient()
+    parsed = {
+        "pages": [
+            {"page_no": 1, "blocks": [{"type": "paragraph", "text": "www.bzfxw.com\n乱码1"}], "tables": []},
+            {"page_no": 2, "blocks": [{"type": "paragraph", "text": "www.bzfxw.com\n乱码2"}], "tables": []},
+            {"page_no": 3, "blocks": [{"type": "paragraph", "text": "www.bzfxw.com\n乱码3"}], "tables": []},
+            {"page_no": 4, "blocks": [{"type": "paragraph", "text": "www.bzfxw.com\n乱码4"}], "tables": []},
+        ]
+    }
+
+    out = client._apply_ocr_repair(b"%PDF-1.4 fake", parsed, runtime_config={})  # noqa: SLF001
+
+    assert captured["page_numbers"] is None
+    pages = out.get("pages") or []
+    assert pages[0]["blocks"][0]["text"] == "第1页 OCR 正文"
+    assert pages[1]["blocks"][0]["text"] == "www.bzfxw.com\n乱码2"
+    assert pages[2]["blocks"][0]["text"] == "第3页 OCR 正文"
+    assert pages[3]["blocks"][0]["text"] == "www.bzfxw.com\n乱码4"
+
+
 def test_parse_pdf_local_fallbacks_when_layout_extract_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Page:
         def extract_text(self, extraction_mode=None):  # noqa: ANN001

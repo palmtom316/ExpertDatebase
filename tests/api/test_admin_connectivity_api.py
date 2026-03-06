@@ -192,6 +192,38 @@ def test_mineru_connectivity_fallbacks_token_header_from_api_key(monkeypatch: py
     assert called["headers"]["token"] == "mineru-key"
 
 
+def test_ocr_connectivity_success_via_mineru_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict = {}
+
+    def fake_post(url: str, headers: dict, json: dict, timeout: float, **kwargs):
+        called["url"] = url
+        called["headers"] = headers
+        called["json"] = json
+        return _DummyResponse(status_code=200, payload={"choices": [{"message": {"content": "识别成功"}}]})
+
+    monkeypatch.setattr("app.api.admin_connectivity.requests.post", fake_post)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/admin/connectivity/test",
+        json={
+            "target": "mineru",
+            "ocr_provider": "siliconflow",
+            "ocr_api_key": "ocr-key",
+            "ocr_model": "deepseek-ai/DeepSeek-OCR",
+            "ocr_base_url": "https://api.siliconflow.cn/v1",
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["target"] == "mineru"
+    assert payload["detail"]["mode"] == "ocr_chat"
+    assert called["url"] == "https://api.siliconflow.cn/v1/chat/completions"
+    assert called["headers"]["Authorization"] == "Bearer ocr-key"
+
+
 def test_embedding_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict = {}
 
@@ -208,10 +240,11 @@ def test_embedding_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None
         "/api/admin/connectivity/test",
         json={
             "target": "embedding",
-            "embedding_provider": "openai",
+            "embedding_provider": "siliconflow",
             "embedding_api_key": "emb-key",
-            "embedding_model": "text-embedding-3-small",
-            "embedding_base_url": "https://runtime-openai.test/v1",
+            "embedding_model": "Qwen/Qwen3-Embedding-8B",
+            "embedding_base_url": "https://api.siliconflow.cn/v1",
+            "embedding_dimensions": "1024",
         },
     )
 
@@ -219,9 +252,10 @@ def test_embedding_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None
     payload = resp.json()
     assert payload["ok"] is True
     assert payload["target"] == "embedding"
-    assert called["url"] == "https://runtime-openai.test/v1/embeddings"
+    assert called["url"] == "https://api.siliconflow.cn/v1/embeddings"
     assert called["headers"]["Authorization"] == "Bearer emb-key"
-    assert called["json"]["model"] == "text-embedding-3-small"
+    assert called["json"]["model"] == "Qwen/Qwen3-Embedding-8B"
+    assert called["json"]["dimensions"] == 1024
 
 
 def test_rerank_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,10 +274,10 @@ def test_rerank_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None:
         "/api/admin/connectivity/test",
         json={
             "target": "rerank",
-            "rerank_provider": "openai",
+            "rerank_provider": "siliconflow",
             "rerank_api_key": "rr-key",
-            "rerank_model": "BAAI/bge-reranker-v2-m3",
-            "rerank_base_url": "https://runtime-openai.test/v1",
+            "rerank_model": "Qwen/Qwen3-Reranker-8B",
+            "rerank_base_url": "https://api.siliconflow.cn/v1",
         },
     )
 
@@ -251,7 +285,7 @@ def test_rerank_connectivity_success(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = resp.json()
     assert payload["ok"] is True
     assert payload["target"] == "rerank"
-    assert called["url"] == "https://runtime-openai.test/v1/rerank"
+    assert called["url"] == "https://api.siliconflow.cn/v1/rerank"
     assert called["headers"]["Authorization"] == "Bearer rr-key"
     assert called["json"]["query"] == "connectivity test"
 

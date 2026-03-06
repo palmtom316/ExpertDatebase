@@ -23,11 +23,12 @@
             <label class="form-field"><span>Provider</span>
               <select v-model="local.ocr_provider">
                 <option value="openai">openai-compatible</option>
+                <option value="siliconflow">siliconflow</option>
                 <option value="mineru">mineru</option>
               </select>
             </label>
-            <label class="form-field"><span>Model</span><input v-model.trim="local.ocr_model" placeholder="vlm / gpt-4o-mini" /></label>
-            <label class="form-field"><span>API Base</span><input v-model.trim="local.ocr_base_url" placeholder="https://your-ocr-gateway/v1 或 https://mineru.net/api/v4/extract/task" /></label>
+            <label class="form-field"><span>Model</span><input v-model.trim="local.ocr_model" placeholder="deepseek-ai/DeepSeek-OCR / vlm" /></label>
+            <label class="form-field"><span>API Base</span><input v-model.trim="local.ocr_base_url" placeholder="https://api.siliconflow.cn/v1 或 https://mineru.net/api/v4/extract/task" /></label>
             <label class="form-field"><span>API Key</span><input v-model.trim="local.ocr_api_key" type="password" placeholder="ocr-key" /></label>
           </div>
           <div class="form-actions">
@@ -64,11 +65,12 @@
           <div class="form-header"><h3>向量化模型</h3></div>
           <div class="form-grid">
             <label class="form-field"><span>Provider</span>
-              <select v-model="local.embedding_provider"><option value="auto">auto</option><option value="openai">openai</option><option value="stub">stub</option></select>
+              <select v-model="local.embedding_provider"><option value="auto">auto</option><option value="openai">openai</option><option value="siliconflow">siliconflow</option><option value="stub">stub</option></select>
             </label>
-            <label class="form-field"><span>Model</span><input v-model.trim="local.embedding_model" placeholder="text-embedding-3-small" /></label>
-            <label class="form-field"><span>API Base</span><input v-model.trim="local.embedding_base_url" placeholder="https://api.openai.com/v1" /></label>
+            <label class="form-field"><span>Model</span><input v-model.trim="local.embedding_model" placeholder="Qwen/Qwen3-Embedding-8B" /></label>
+            <label class="form-field"><span>API Base</span><input v-model.trim="local.embedding_base_url" placeholder="https://api.siliconflow.cn/v1" /></label>
             <label class="form-field"><span>API Key</span><input v-model.trim="local.embedding_api_key" type="password" placeholder="embedding-key" /></label>
+            <label class="form-field"><span>Dimensions</span><input v-model.trim="local.embedding_dimensions" placeholder="4096" /></label>
           </div>
           <div class="form-actions">
             <button class="btn btn-secondary" type="button" :disabled="connState.embedding.loading" @click="triggerTestConn('embedding')">{{ connState.embedding.loading ? "CHECKING..." : "API CHECK" }}</button>
@@ -83,10 +85,10 @@
           <div class="form-header"><h3>重排模型 (可选)</h3></div>
           <div class="form-grid">
             <label class="form-field"><span>Provider</span>
-              <select v-model="local.rerank_provider"><option value="auto">auto</option><option value="openai">openai</option><option value="local">local</option><option value="stub">stub</option></select>
+              <select v-model="local.rerank_provider"><option value="auto">auto</option><option value="openai">openai</option><option value="siliconflow">siliconflow</option><option value="local">local</option><option value="stub">stub</option></select>
             </label>
-            <label class="form-field"><span>Model</span><input v-model.trim="local.rerank_model" placeholder="BAAI/bge-reranker-v2-m3" /></label>
-            <label class="form-field"><span>API Base</span><input v-model.trim="local.rerank_base_url" placeholder="https://api.openai.com/v1" /></label>
+            <label class="form-field"><span>Model</span><input v-model.trim="local.rerank_model" placeholder="Qwen/Qwen3-Reranker-8B" /></label>
+            <label class="form-field"><span>API Base</span><input v-model.trim="local.rerank_base_url" placeholder="https://api.siliconflow.cn/v1" /></label>
             <label class="form-field"><span>API Key</span><input v-model.trim="local.rerank_api_key" type="password" placeholder="rerank-key" /></label>
           </div>
           <div class="form-actions">
@@ -102,10 +104,10 @@
           <div class="form-header"><h3>图像/表格识别 (可选)</h3></div>
           <div class="form-grid">
             <label class="form-field"><span>Provider</span>
-              <select v-model="local.vl_provider"><option value="stub">stub</option><option value="openai">openai</option></select>
+              <select v-model="local.vl_provider"><option value="stub">stub</option><option value="openai">openai</option><option value="siliconflow">siliconflow</option></select>
             </label>
-            <label class="form-field"><span>Model</span><input v-model.trim="local.vl_model" placeholder="gpt-4o-mini" /></label>
-            <label class="form-field"><span>API Base</span><input v-model.trim="local.vl_base_url" placeholder="https://api.openai.com/v1" /></label>
+            <label class="form-field"><span>Model</span><input v-model.trim="local.vl_model" placeholder="Qwen/Qwen3-VL-8B-Instruct" /></label>
+            <label class="form-field"><span>API Base</span><input v-model.trim="local.vl_base_url" placeholder="https://api.siliconflow.cn/v1" /></label>
             <label class="form-field"><span>API Key</span><input v-model.trim="local.vl_api_key" type="password" placeholder="vl-key" /></label>
           </div>
           <div class="form-actions">

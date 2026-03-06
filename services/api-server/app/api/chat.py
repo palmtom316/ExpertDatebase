@@ -11,6 +11,7 @@ from slowapi.util import get_remote_address
 from app.services.auth import ALL_ROLES, require_roles
 from app.services.chat_orchestrator import chat_with_citations
 from app.services.entity_index import build_entity_index_from_env
+from app.services.runtime_defaults import apply_runtime_defaults
 from app.services.search_service import create_search_repo_from_env
 
 limiter = Limiter(key_func=get_remote_address)
@@ -33,21 +34,27 @@ def chat(request: Request, payload: dict) -> dict:
         mode = "qa"
     selected_doc_id = str(payload.get("selected_doc_id") or "").strip()
     selected_version_id = str(payload.get("selected_version_id") or "").strip()
-    runtime_config = {
+    runtime_config = apply_runtime_defaults(
+        {
         "llm_provider": str(payload.get("llm_provider") or "").strip().lower(),
         "llm_api_key": str(payload.get("llm_api_key") or "").strip(),
         "llm_model": str(payload.get("llm_model") or "").strip(),
         "llm_base_url": str(payload.get("llm_base_url") or "").strip(),
+        "ocr_provider": str(payload.get("ocr_provider") or "").strip().lower(),
+        "ocr_api_key": str(payload.get("ocr_api_key") or "").strip(),
+        "ocr_model": str(payload.get("ocr_model") or "").strip(),
+        "ocr_base_url": str(payload.get("ocr_base_url") or "").strip(),
         "embedding_provider": str(payload.get("embedding_provider") or "").strip().lower(),
         "embedding_api_key": str(payload.get("embedding_api_key") or "").strip(),
         "embedding_model": str(payload.get("embedding_model") or "").strip(),
         "embedding_base_url": str(payload.get("embedding_base_url") or "").strip(),
+        "embedding_dimensions": str(payload.get("embedding_dimensions") or "").strip(),
         "rerank_provider": str(payload.get("rerank_provider") or "").strip().lower(),
         "rerank_api_key": str(payload.get("rerank_api_key") or "").strip(),
         "rerank_model": str(payload.get("rerank_model") or "").strip(),
         "rerank_base_url": str(payload.get("rerank_base_url") or "").strip(),
-    }
-    runtime_config = {k: v for k, v in runtime_config.items() if v}
+        }
+    )
     search_must: list[dict] = []
     if selected_doc_id:
         search_must.append({"key": "doc_id", "match": {"value": selected_doc_id}})

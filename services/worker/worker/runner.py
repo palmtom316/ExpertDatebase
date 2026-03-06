@@ -81,6 +81,21 @@ def _sanitize_text(value: Any) -> str:
     return "".join(ch for ch in s if ch in ("\n", "\t") or ord(ch) >= 32).strip()
 
 
+def _redact_runtime_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key or "").strip().lower()
+            if any(token in key_text for token in ("api_key", "token", "secret", "password")):
+                redacted[key] = "***"
+                continue
+            redacted[key] = _redact_runtime_secrets(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_runtime_secrets(item) for item in value]
+    return value
+
+
 def _mineru_pages_to_markdown(mineru_result: dict[str, Any]) -> str:
     pages = mineru_result.get("pages") if isinstance(mineru_result, dict) else []
     if not isinstance(pages, list):
@@ -183,6 +198,15 @@ def _export_sparse_sidecar_pages(mineru_result: dict[str, Any], doc_id: str) -> 
 def _env_enabled(name: str, default: bool) -> bool:
     raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
     return raw not in {"0", "false", "no", "off", ""}
+
+
+def _embedding_batch_size(runtime_config: dict[str, Any]) -> int:
+    raw = str(runtime_config.get("embedding_batch_size") or os.getenv("EMBEDDING_BATCH_SIZE", "32")).strip()
+    try:
+        value = int(raw)
+    except Exception:  # noqa: BLE001
+        value = 32
+    return max(1, value)
 
 
 def _doc_type_allowed_for_table_vl(doc_type: str) -> bool:
@@ -388,7 +412,11 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     version_id = str(job["version_id"])
     object_key = str(job["object_key"])
 
-    rt.doc_registry.mark_version_status(version_id=version_id, status="processing", notes={"job": job})
+    rt.doc_registry.mark_version_status(
+        version_id=version_id,
+        status="processing",
+        notes={"job": _redact_runtime_secrets(job)},
+    )
 
     pdf_bytes = rt.storage.get_bytes(object_key)
     runtime_config = job.get("runtime_config") if isinstance(job.get("runtime_config"), dict) else {}
@@ -467,6 +495,7 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     entity_index = rt.entity_index or _EntityIndex()
     upserted = 0
     embedding_stats: dict[str, Any] = {
+        "request_calls": 0,
         "chunk_calls": 0,
         "stub_calls": 0,
         "fallback_stub_calls": 0,
@@ -487,6 +516,7 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
     if callable(delete_by_version):
         delete_by_version(version_id=version_id)
 
+    prepared_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for chunk in index_chunks:
         chunk_for_payload = {
             **chunk,
@@ -515,26 +545,71 @@ def process_document_job(job: dict[str, Any], rt: WorkerRuntime) -> dict[str, An
             entity_index=entity_index,
             page_type=page_type,
         )
-        try:
-            vector = rt.embedding_client.embed_text(chunk_for_payload["text"], runtime_config=runtime_config)
-        except TypeError:
-            vector = rt.embedding_client.embed_text(chunk_for_payload["text"])
-        meta_fn = getattr(rt.embedding_client, "pop_last_call_meta", None)
-        if callable(meta_fn):
-            meta = meta_fn() or {}
-            embedding_stats["chunk_calls"] = int(embedding_stats["chunk_calls"] or 0) + 1
-            provider_name = str(meta.get("provider") or "").strip().lower() or "unknown"
-            provider_counts = embedding_stats["providers"]
-            provider_counts[provider_name] = int(provider_counts.get(provider_name) or 0) + 1
-            if provider_name == "openai" and not bool(meta.get("used_stub")):
-                embedding_stats["openai_calls"] = int(embedding_stats["openai_calls"] or 0) + 1
-            if bool(meta.get("used_stub")):
-                embedding_stats["stub_calls"] = int(embedding_stats["stub_calls"] or 0) + 1
-                fallback_reason = str(meta.get("fallback_reason") or "").strip() or "stub"
-                reason_counts = embedding_stats["fallback_reasons"]
-                reason_counts[fallback_reason] = int(reason_counts.get(fallback_reason) or 0) + 1
-                if fallback_reason.startswith("openai_failed:"):
-                    embedding_stats["fallback_stub_calls"] = int(embedding_stats["fallback_stub_calls"] or 0) + 1
+        prepared_rows.append((chunk_for_payload, payload))
+
+    texts = [row[0]["text"] for row in prepared_rows]
+    vectors: list[list[float]] = []
+    batch_embed = getattr(rt.embedding_client, "embed_texts", None)
+    if callable(batch_embed):
+        batch_size = _embedding_batch_size(runtime_config=runtime_config)
+        for start in range(0, len(texts), batch_size):
+            batch_texts = texts[start : start + batch_size]
+            try:
+                batch_vectors = batch_embed(batch_texts, runtime_config=runtime_config)
+            except TypeError:
+                batch_vectors = batch_embed(batch_texts)
+            if len(batch_vectors) != len(batch_texts):
+                raise RuntimeError(
+                    f"embedding vector count mismatch: expected {len(batch_texts)} got {len(batch_vectors)}"
+                )
+            vectors.extend(batch_vectors)
+            meta_fn = getattr(rt.embedding_client, "pop_last_call_meta", None)
+            if callable(meta_fn):
+                meta = meta_fn() or {}
+                item_count = int(meta.get("item_count") or len(batch_texts) or 0)
+                request_count = int(meta.get("request_count") or 1)
+                embedding_stats["chunk_calls"] = int(embedding_stats["chunk_calls"] or 0) + item_count
+                embedding_stats["request_calls"] = int(embedding_stats["request_calls"] or 0) + request_count
+                provider_name = str(meta.get("provider") or "").strip().lower() or "unknown"
+                provider_counts = embedding_stats["providers"]
+                provider_counts[provider_name] = int(provider_counts.get(provider_name) or 0) + item_count
+                if provider_name in {"openai", "siliconflow"} and not bool(meta.get("used_stub")):
+                    embedding_stats["openai_calls"] = int(embedding_stats["openai_calls"] or 0) + request_count
+                if bool(meta.get("used_stub")):
+                    embedding_stats["stub_calls"] = int(embedding_stats["stub_calls"] or 0) + item_count
+                    fallback_reason = str(meta.get("fallback_reason") or "").strip() or "stub"
+                    reason_counts = embedding_stats["fallback_reasons"]
+                    reason_counts[fallback_reason] = int(reason_counts.get(fallback_reason) or 0) + item_count
+                    if fallback_reason.startswith("openai_failed:"):
+                        embedding_stats["fallback_stub_calls"] = int(embedding_stats["fallback_stub_calls"] or 0) + item_count
+    else:
+        for text in texts:
+            try:
+                vectors.append(rt.embedding_client.embed_text(text, runtime_config=runtime_config))
+            except TypeError:
+                vectors.append(rt.embedding_client.embed_text(text))
+            meta_fn = getattr(rt.embedding_client, "pop_last_call_meta", None)
+            if callable(meta_fn):
+                meta = meta_fn() or {}
+                embedding_stats["chunk_calls"] = int(embedding_stats["chunk_calls"] or 0) + 1
+                embedding_stats["request_calls"] = int(embedding_stats["request_calls"] or 0) + 1
+                provider_name = str(meta.get("provider") or "").strip().lower() or "unknown"
+                provider_counts = embedding_stats["providers"]
+                provider_counts[provider_name] = int(provider_counts.get(provider_name) or 0) + 1
+                if provider_name in {"openai", "siliconflow"} and not bool(meta.get("used_stub")):
+                    embedding_stats["openai_calls"] = int(embedding_stats["openai_calls"] or 0) + 1
+                if bool(meta.get("used_stub")):
+                    embedding_stats["stub_calls"] = int(embedding_stats["stub_calls"] or 0) + 1
+                    fallback_reason = str(meta.get("fallback_reason") or "").strip() or "stub"
+                    reason_counts = embedding_stats["fallback_reasons"]
+                    reason_counts[fallback_reason] = int(reason_counts.get(fallback_reason) or 0) + 1
+                    if fallback_reason.startswith("openai_failed:"):
+                        embedding_stats["fallback_stub_calls"] = int(embedding_stats["fallback_stub_calls"] or 0) + 1
+
+    if len(vectors) != len(prepared_rows):
+        raise RuntimeError(f"embedding vector count mismatch: expected {len(prepared_rows)} got {len(vectors)}")
+
+    for (chunk_for_payload, payload), vector in zip(prepared_rows, vectors, strict=False):
         point_id = f"{doc_id}:{version_id}:{chunk_for_payload['chunk_id']}"
         rt.qdrant_repo.upsert(point_id=point_id, vector=vector, payload=payload)
         upserted += 1

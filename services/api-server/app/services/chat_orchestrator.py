@@ -138,32 +138,270 @@ def _pick_best_evidence_text(citation: dict[str, Any], max_len: int = 220) -> st
 
 
 def _dedupe_citations(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[tuple[str, int | None, int | None, str, str, str], dict[str, Any]] = {}
-    order: list[tuple[str, int | None, int | None, str, str, str]] = []
+    merged: list[dict[str, Any]] = []
     for raw in citations:
         c = dict(raw or {})
-        key = _citation_key(c)
-        if key not in merged:
-            c["excerpt"] = _clean_text(c.get("excerpt"), max_len=500)
-            c["chunk_text"] = _clean_text(c.get("chunk_text"), max_len=1000)
-            c["merged_count"] = 1
-            merged[key] = c
-            order.append(key)
+        c["excerpt"] = _clean_text(c.get("excerpt"), max_len=500)
+        c["chunk_text"] = _clean_text(c.get("chunk_text"), max_len=1000)
+        c["merged_count"] = int(c.get("merged_count") or 1)
+        existing = next((item for item in merged if _same_citation_for_dedupe(item, c)), None)
+        if existing is None:
+            merged.append(c)
             continue
+        _merge_citation_record(existing, c)
+    return _hydrate_citation_doc_names(merged)
 
-        prev = merged[key]
-        prev["excerpt"] = _merge_text(
-            str(prev.get("excerpt") or ""),
-            _clean_text(c.get("excerpt"), max_len=500),
-        )
-        prev["chunk_text"] = _merge_text(
-            str(prev.get("chunk_text") or ""),
-            _clean_text(c.get("chunk_text"), max_len=1000),
-            max_len=1000,
-        )
-        prev["merged_count"] = int(prev.get("merged_count") or 1) + 1
 
-    return [merged[k] for k in order]
+def _citation_doc_identity(citation: dict[str, Any]) -> str:
+    doc_id = str(citation.get("doc_id") or "").strip()
+    if doc_id:
+        return f"id:{doc_id}"
+    doc_name = str(citation.get("doc_name") or "").strip().lower()
+    if doc_name:
+        return f"name:{doc_name}"
+    route = str(citation.get("route") or "").strip().lower()
+    if route:
+        return f"route:{route}"
+    return ""
+
+
+def _citation_metadata_score(citation: dict[str, Any]) -> float:
+    source_type = str(citation.get("source_type") or "").strip().lower()
+    text = _pick_full_evidence_text(citation, max_len=1200)
+    score = 0.0
+    if str(citation.get("doc_name") or "").strip():
+        score += 4.0
+    if str(citation.get("doc_id") or "").strip():
+        score += 3.0
+    if str(citation.get("clause_id") or "").strip():
+        score += 3.0
+    if citation.get("page_start") is not None:
+        score += 1.0
+    if citation.get("table_id") is not None:
+        score += 1.0
+    if source_type == "text":
+        score += 2.0
+    elif source_type == "explanation":
+        score += 1.0
+    elif source_type == "section_summary":
+        score -= 0.8
+    if text:
+        score += min(4.0, len(text) / 120.0)
+    if text and _is_listing_noise_text(text):
+        score -= 6.0
+    return score
+
+
+def _same_citation_for_dedupe(existing: dict[str, Any], current: dict[str, Any]) -> bool:
+    if _citation_doc_identity(existing) != _citation_doc_identity(current):
+        return False
+    if existing.get("page_start") != current.get("page_start"):
+        return False
+    existing_end = existing.get("page_end", existing.get("page_start"))
+    current_end = current.get("page_end", current.get("page_start"))
+    if existing_end != current_end:
+        return False
+
+    existing_source = str(existing.get("source_type") or "").strip().lower()
+    current_source = str(current.get("source_type") or "").strip().lower()
+    if existing_source and current_source and existing_source != current_source:
+        return False
+
+    existing_table = str(existing.get("table_id") or "").strip()
+    current_table = str(current.get("table_id") or "").strip()
+    if existing_table and current_table and existing_table != current_table:
+        return False
+
+    existing_clause = str(existing.get("clause_id") or "").strip()
+    current_clause = str(current.get("clause_id") or "").strip()
+    if bool(existing_clause) != bool(current_clause):
+        existing_route = str(existing.get("route") or "").strip().lower()
+        current_route = str(current.get("route") or "").strip().lower()
+        if existing_route and current_route and existing_route != current_route:
+            return False
+    if existing_clause and current_clause and existing_clause != current_clause:
+        return False
+    return True
+
+
+def _merge_citation_record(existing: dict[str, Any], current: dict[str, Any]) -> None:
+    existing_score = _citation_metadata_score(existing)
+    current_score = _citation_metadata_score(current)
+    preferred = current if current_score > existing_score else existing
+    fallback = existing if preferred is current else current
+    for field in (
+        "doc_name",
+        "doc_id",
+        "page_start",
+        "page_end",
+        "route",
+        "source_type",
+        "page_type",
+        "table_id",
+        "row_index",
+        "clause_id",
+        "table_repr",
+    ):
+        preferred_value = preferred.get(field)
+        fallback_value = fallback.get(field)
+        if preferred_value not in (None, ""):
+            existing[field] = preferred_value
+        elif existing.get(field) in (None, "") and fallback_value not in (None, ""):
+            existing[field] = fallback_value
+    existing["excerpt"] = _merge_text(
+        str(existing.get("excerpt") or ""),
+        str(current.get("excerpt") or ""),
+    )
+    existing["chunk_text"] = _merge_text(
+        str(existing.get("chunk_text") or ""),
+        str(current.get("chunk_text") or ""),
+        max_len=1000,
+    )
+    existing["merged_count"] = int(existing.get("merged_count") or 1) + int(current.get("merged_count") or 1)
+
+
+def _hydrate_citation_doc_names(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_doc_id: dict[str, str] = {}
+    for c in citations:
+        doc_id = str(c.get("doc_id") or "").strip()
+        doc_name = str(c.get("doc_name") or "").strip()
+        if doc_id and doc_name:
+            best = by_doc_id.get(doc_id, "")
+            if len(doc_name) > len(best):
+                by_doc_id[doc_id] = doc_name
+
+    out: list[dict[str, Any]] = []
+    for raw in citations:
+        c = dict(raw or {})
+        doc_id = str(c.get("doc_id") or "").strip()
+        if doc_id and not str(c.get("doc_name") or "").strip() and by_doc_id.get(doc_id):
+            c["doc_name"] = by_doc_id[doc_id]
+        out.append(c)
+    return out
+
+
+def _citation_has_audit_identity(citation: dict[str, Any]) -> bool:
+    return bool(
+        str(citation.get("doc_name") or "").strip()
+        or str(citation.get("doc_id") or "").strip()
+        or str(citation.get("route") or "").strip()
+    )
+
+
+def _citation_has_meaningful_evidence(citation: dict[str, Any]) -> bool:
+    text = _pick_full_evidence_text(citation, max_len=1200) or _pick_best_evidence_text(citation, max_len=600)
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(marker in text or marker in lowered for marker in _ARTIFACT_NOISE_MARKERS):
+        return False
+    if _is_listing_noise_text(text):
+        return False
+    if _readable_ratio(text) < 0.45:
+        return False
+    return len(_norm_segment_for_dedupe(text)) >= 4
+
+
+def _filter_chat_citations(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for c in citations:
+        if not _citation_has_audit_identity(c):
+            continue
+        if not _citation_has_meaningful_evidence(c):
+            continue
+        out.append(c)
+    return out
+
+
+def _constraint_group_key(citation: dict[str, Any]) -> tuple[str, str]:
+    doc_identity = _citation_doc_identity(citation) or "unknown"
+    clause_id = str(citation.get("clause_id") or "").strip()
+    if clause_id:
+        return doc_identity, f"clause:{clause_id}"
+    table_id = str(citation.get("table_id") or "").strip()
+    if table_id:
+        return doc_identity, f"table:{table_id}"
+    page_start = citation.get("page_start")
+    page_end = citation.get("page_end", page_start)
+    return doc_identity, f"page:{page_start}:{page_end}"
+
+
+def _constraint_citation_score(question: str, citation: dict[str, Any]) -> float:
+    source_type = str(citation.get("source_type") or "").strip().lower()
+    full_text = _pick_full_evidence_text(citation, max_len=1400)
+    clause_id = str(citation.get("clause_id") or "").strip()
+    score = _question_to_citation_relevance(question=question, citation=citation)
+    score += _citation_metadata_score(citation) * 0.7
+    if source_type == "text":
+        score += 1.8
+    elif source_type == "explanation":
+        score += 0.3
+    elif source_type == "section_summary":
+        score -= 2.2
+    if clause_id:
+        score += min(1.2, _clause_depth(clause_id) * 0.2)
+    if bool(citation.get("is_mandatory")):
+        score += 1.2
+    if any(token in full_text for token in _CONSTRAINT_GUARD_TOKENS):
+        score += 1.2
+    return score
+
+
+def _citation_page_span(citation: dict[str, Any]) -> tuple[int, int]:
+    start = int(citation.get("page_start") or 0)
+    end = int(citation.get("page_end") or start or 0)
+    if end < start:
+        end = start
+    return start, end
+
+
+def _is_weaker_overlap_duplicate(question: str, kept: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    if _citation_doc_identity(kept) != _citation_doc_identity(candidate):
+        return False
+    kept_start, kept_end = _citation_page_span(kept)
+    cand_start, cand_end = _citation_page_span(candidate)
+    if kept_end < cand_start or cand_end < kept_start:
+        return False
+    kept_clause = str(kept.get("clause_id") or "").strip()
+    cand_clause = str(candidate.get("clause_id") or "").strip()
+    cand_source = str(candidate.get("source_type") or "").strip()
+    if kept_clause and not cand_clause and not cand_source:
+        return _constraint_citation_score(question, kept) >= _constraint_citation_score(question, candidate)
+    kept_text = _norm_segment_for_dedupe(_pick_full_evidence_text(kept, max_len=900))
+    cand_text = _norm_segment_for_dedupe(_pick_full_evidence_text(candidate, max_len=900))
+    if not kept_text or not cand_text:
+        return False
+    if cand_text not in kept_text and kept_text not in cand_text:
+        return False
+    return _constraint_citation_score(question, kept) >= _constraint_citation_score(question, candidate)
+
+
+def _shape_constraint_citations(question: str, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    filtered = _filter_chat_citations(citations)
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for c in filtered:
+        key = _constraint_group_key(c)
+        current = grouped.get(key)
+        if current is None or _constraint_citation_score(question, c) > _constraint_citation_score(question, current):
+            grouped[key] = c
+    ranked = sorted(
+        grouped.values(),
+        key=lambda item: (
+            -_constraint_citation_score(question, item),
+            int(item.get("page_start") or 0),
+            str(item.get("clause_id") or ""),
+            str(item.get("source_type") or ""),
+        ),
+    )
+    limit = max(4, int(os.getenv("CHAT_CONSTRAINT_MAX_ITEMS", "16")))
+    out: list[dict[str, Any]] = []
+    for citation in ranked:
+        if any(_is_weaker_overlap_duplicate(question=question, kept=kept, candidate=citation) for kept in out):
+            continue
+        out.append(citation)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _build_expandable_evidence(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -192,7 +430,7 @@ def _build_expandable_evidence(citations: list[dict[str, Any]]) -> list[dict[str
 
 
 def _constraint_risk_level(citation: dict[str, Any]) -> str:
-    if bool(citation.get("is_mandatory")):
+    if _constraint_is_mandatory(citation):
         return "high"
     text = f"{citation.get('excerpt') or ''} {citation.get('chunk_text') or ''}"
     if re.search(r"(不得|严禁|禁止)", text):
@@ -202,8 +440,24 @@ def _constraint_risk_level(citation: dict[str, Any]) -> str:
     return "low"
 
 
-_CONSTRAINT_GUARD_TOKENS = ("必须", "应当", "应", "不得", "严禁", "禁止")
+_CONSTRAINT_GUARD_TOKENS = ("必须", "应当", "应", "不得", "严禁", "禁止", "方可", "只允许")
 _CONDITION_GUARD_TOKENS = ("在", "当", "若", "如果", "前", "后", "时")
+_ARTIFACT_NOISE_MARKERS = (
+    "标准分享网",
+    "免费下载",
+    "www.bzfxw.com",
+    "bzfxw.com",
+    "value of the article",
+    "value of the product",
+    "value of the power system",
+)
+
+
+def _constraint_is_mandatory(citation: dict[str, Any]) -> bool:
+    if bool(citation.get("is_mandatory")):
+        return True
+    text = f"{citation.get('excerpt') or ''} {citation.get('chunk_text') or ''}"
+    return bool(re.search(r"(必须|应当|不得|严禁|禁止|方可|只允许)", text))
 
 
 def _pick_full_evidence_text(citation: dict[str, Any], max_len: int = 4000) -> str:
@@ -290,7 +544,7 @@ def _build_constraint_items(citations: list[dict[str, Any]]) -> list[dict[str, A
                 "page_start": c.get("page_start"),
                 "page_end": c.get("page_end"),
                 "clause_id": str(c.get("clause_id") or "").strip(),
-                "is_mandatory": bool(c.get("is_mandatory")),
+                "is_mandatory": _constraint_is_mandatory(c),
                 "risk_level": _constraint_risk_level(c),
                 # Backward-compatible display field.
                 "evidence": evidence_short,
@@ -759,7 +1013,7 @@ _CN_STOP_TERMS = {
     "应该",
     "是否",
 }
-_CN_STOP_CHARS = set("的了吗呢吧啊呀和及并且或与在对将把为于被就都其")
+_CN_STOP_CHARS = set("的了吗呢吧啊呀和及且或与在对将把为于被就都其")
 _LISTING_GENERIC_FOCUS_TERMS = {
     "安装",
     "规定",
@@ -937,11 +1191,28 @@ def _question_to_citation_relevance(question: str, citation: dict[str, Any]) -> 
     if not text:
         return 0.0
     score = 0.0
-    for term in terms:
+    matched_terms: list[str] = []
+    strong_matches = 0
+    weak_matches = 0
+    for term in sorted(terms, key=lambda value: (-len(value), value)):
         cnt = text.count(term)
         if cnt <= 0:
             continue
-        score += (1.0 + min(len(term), 8) * 0.1) * min(cnt, 3)
+        if any(term in longer for longer in matched_terms if len(longer) >= len(term) + 2):
+            continue
+        matched_terms.append(term)
+        if len(term) >= 4:
+            strong_matches += 1
+            score += (2.2 + min(len(term), 10) * 0.28) * min(cnt, 2)
+        else:
+            weak_matches += 1
+            score += (0.7 + min(len(term), 3) * 0.08) * min(cnt, 2)
+    if strong_matches:
+        score += strong_matches * 1.2
+        if strong_matches >= 2:
+            score += (strong_matches - 1) * 6.0
+    elif weak_matches >= 2:
+        score += min(1.8, (weak_matches - 1) * 0.6)
     if _question_has_install_intent(question) and "安装" in text:
         score += 1.6
     if _question_has_install_intent(question) and not _question_has_vacuum_terms(question):
@@ -1462,9 +1733,19 @@ def chat_with_citations(
     search_filter: dict[str, Any] | None = None,
     mode: str = "qa",
 ) -> dict[str, Any]:
+    selected_mode = str(mode or "qa").strip().lower()
+    if selected_mode not in {"qa", "constraint"}:
+        selected_mode = "qa"
     top_k = max(5, int(os.getenv("CHAT_SEARCH_TOP_K", "16")))
     if _is_listing_clause_query(question):
         top_k = max(top_k, int(os.getenv("CHAT_SEARCH_TOP_K_LISTING", "48")))
+    has_doc_scope = bool((search_filter or {}).get("must"))
+    if has_doc_scope:
+        top_k = max(top_k, int(os.getenv("CHAT_SEARCH_TOP_K_DOC_SCOPE", "32")))
+    if selected_mode == "constraint":
+        top_k = max(top_k, int(os.getenv("CHAT_SEARCH_TOP_K_CONSTRAINT", "24")))
+        if has_doc_scope:
+            top_k = max(top_k, int(os.getenv("CHAT_SEARCH_TOP_K_CONSTRAINT_DOC_SCOPE", "48")))
     search_res = hybrid_search(
         question=question,
         repo=repo,
@@ -1473,10 +1754,10 @@ def chat_with_citations(
         runtime_config=runtime_config,
         search_filter=search_filter,
     )
-    citations = _dedupe_citations(search_res["citations"])
+    citations = _filter_chat_citations(_dedupe_citations(search_res["citations"]))
     retrieval_debug = search_res.get("debug") if isinstance(search_res, dict) else {}
-    selected_mode = str(mode or "qa").strip().lower()
     if selected_mode == "constraint":
+        citations = _shape_constraint_citations(question=question, citations=citations)
         constraints = _build_constraint_items(citations)
         constraints_for_model = _build_constraint_model_items(constraints)
         answer = _build_constraint_summary(question=question, constraints=constraints)

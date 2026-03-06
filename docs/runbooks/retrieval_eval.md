@@ -38,11 +38,12 @@
 
 ```bash
 .venv/bin/python services/api-server/scripts/eval_retrieval.py \
-  --dataset /path/to/retrieval_eval.jsonl \
   --top-k 10 \
   --output outputs/retrieval_eval.latest.json \
   --report outputs/retrieval_eval.report.json
 ```
+
+默认数据集为 `datasets/v1.2/retrieval_eval_eight_specs_bid_32.jsonl`。如需指定其他数据集，再显式传入 `--dataset /path/to/retrieval_eval.jsonl`。
 
 ## 3. 输出指标
 
@@ -67,3 +68,16 @@
 - `EVAL_MIN_CLAUSE_HIT_AT_K`（默认 `0.70`，仅在数据集包含条文预期时生效）
 - `EVAL_MIN_CONSTRAINT_COVERAGE`（默认 `0.70`，仅在数据集包含约束规格时生效）
 - `EVAL_MIN_CITATION_COMPLETENESS`（默认 `0.85`，仅在存在相关命中时生效）
+
+## 4. 当前推荐运行时默认值
+
+- `OCR_PROVIDER=siliconflow`
+- `OCR_MODEL=deepseek-ai/DeepSeek-OCR`
+- `OCR_BASE_URL=https://api.siliconflow.cn/v1`
+- `EMBEDDING_PROVIDER=siliconflow`
+- `EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B`
+- `EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1`
+- `EMBEDDING_DIMENSIONS=4096`
+- `RERANK_PROVIDER=siliconflow`
+- `RERANK_MODEL=Qwen/Qwen3-Reranker-8B`
+- `RERANK_BASE_URL=https://api.siliconflow.cn/v1`

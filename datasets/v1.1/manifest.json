@@ -1,0 +1,23 @@
+{
+  "version": "v1.1",
+  "name": "retrieval_eval_six_specs_bid_30",
+  "description": "Six-spec targeted retrieval regression pack for bid-writing constraints and clause recall.",
+  "sample_count": 30,
+  "dataset_path": "datasets/v1.1/retrieval_eval_six_specs_bid_30.jsonl",
+  "doc_ids": [
+    "doc_a256d9480e28",
+    "doc_40225af9ac39",
+    "doc_f5fdda233d68",
+    "doc_9ca0fec0f69d",
+    "doc_8871276a48dc",
+    "doc_c877382f932c"
+  ],
+  "version_ids": [
+    "ver_69e92cc60202",
+    "ver_24863edc1021",
+    "ver_378644657fb9",
+    "ver_8128b5e81a91",
+    "ver_7a2868821f82",
+    "ver_b7d31c1cc973"
+  ]
+}

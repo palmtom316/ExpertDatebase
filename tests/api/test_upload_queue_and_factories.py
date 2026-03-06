@@ -40,6 +40,10 @@ class TestUploadQueueAndFactories(unittest.TestCase):
                 task_queue=queue,
                 doc_type="公司资质",
                 runtime_config={
+                    "ocr_provider": "siliconflow",
+                    "ocr_api_key": "ocr-key",
+                    "ocr_model": "deepseek-ai/DeepSeek-OCR",
+                    "ocr_base_url": "https://api.siliconflow.cn/v1",
                     "mineru_api_base": "https://mineru.example.com",
                     "mineru_api_key": "mineru-key",
                     "llm_provider": "openai",
@@ -48,6 +52,7 @@ class TestUploadQueueAndFactories(unittest.TestCase):
                     "embedding_provider": "openai",
                     "embedding_api_key": "emb-key",
                     "embedding_model": "text-embedding-3-small",
+                    "embedding_dimensions": "1024",
                     "rerank_provider": "local",
                     "rerank_model": "gpt-4o-mini",
                     "vl_provider": "openai",
@@ -61,8 +66,10 @@ class TestUploadQueueAndFactories(unittest.TestCase):
             self.assertEqual(queue.jobs[0]["doc_id"], result["doc_id"])
             self.assertEqual(queue.jobs[0]["version_id"], result["version_id"])
             self.assertEqual(queue.jobs[0]["runtime_config"]["mineru_api_base"], "https://mineru.example.com")
+            self.assertEqual(queue.jobs[0]["runtime_config"]["ocr_provider"], "siliconflow")
             self.assertEqual(queue.jobs[0]["runtime_config"]["llm_provider"], "openai")
             self.assertEqual(queue.jobs[0]["runtime_config"]["embedding_provider"], "openai")
+            self.assertEqual(queue.jobs[0]["runtime_config"]["embedding_dimensions"], "1024")
             self.assertEqual(queue.jobs[0]["runtime_config"]["rerank_provider"], "local")
             self.assertEqual(queue.jobs[0]["runtime_config"]["vl_provider"], "openai")
             self.assertEqual(queue.jobs[0]["doc_type"], "公司资质")
@@ -168,6 +175,45 @@ class TestUploadQueueAndFactories(unittest.TestCase):
             self.assertEqual(len(queue.jobs), 2)
             self.assertEqual(queue.jobs[-1]["version_id"], first["version_id"])
             self.assertIn("doc_type", queue.jobs[-1])
+
+    def test_upload_dedup_requeues_processed_when_runtime_ocr_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            from app.services.storage import LocalObjectStorage
+
+            storage = LocalObjectStorage(Path(tmp) / "objects")
+            registry = JSONDocRegistry(Path(tmp) / "registry.json")
+            queue = DummyQueue()
+            data = b"%PDF-1.4 reprocess-ocr-content"
+
+            first = upload_pdf_bytes(
+                filename="reprocess-ocr.pdf",
+                content=data,
+                storage=storage,
+                registry=registry,
+                task_queue=queue,
+            )
+            registry.update_version_status(first["version_id"], "processed", notes={"ok": True})
+
+            second = upload_pdf_bytes(
+                filename="reprocess-ocr.pdf",
+                content=data,
+                storage=storage,
+                registry=registry,
+                task_queue=queue,
+                runtime_config={
+                    "ocr_provider": "siliconflow",
+                    "ocr_api_key": "ocr-key",
+                    "ocr_base_url": "https://api.siliconflow.cn/v1",
+                    "ocr_model": "deepseek-ai/DeepSeek-OCR",
+                },
+            )
+
+            self.assertTrue(second.get("deduplicated"))
+            self.assertTrue(second.get("requeued"))
+            self.assertEqual(second.get("status"), "retry_queued")
+            self.assertEqual(first["version_id"], second["version_id"])
+            self.assertEqual(len(queue.jobs), 2)
+            self.assertEqual(queue.jobs[-1]["runtime_config"]["ocr_provider"], "siliconflow")
 
     def test_registry_can_filter_versions_by_doc_type(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

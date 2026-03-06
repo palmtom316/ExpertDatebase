@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
 import json
 import os
@@ -71,6 +73,387 @@ class MinerUClient:
             if repaired:
                 return repaired
         return lines
+
+    def _page_text(self, page: Any) -> str:
+        if not isinstance(page, dict):
+            return ""
+        lines: list[str] = []
+        for block in page.get("blocks") or []:
+            if isinstance(block, dict):
+                text = str(block.get("text") or "").strip()
+                if text:
+                    lines.append(text)
+        for table in page.get("tables") or []:
+            if isinstance(table, dict):
+                text = str(table.get("raw_text") or "").strip()
+                if text:
+                    lines.append(text)
+        return "\n".join(lines).strip()
+
+    def _cjk_ratio(self, text: str) -> float:
+        sample = str(text or "").strip()
+        if not sample:
+            return 0.0
+        cjk_count = sum(1 for ch in sample if "\u4e00" <= ch <= "\u9fff")
+        return cjk_count / max(1, len(sample))
+
+    def _noise_line_ratio(self, text: str) -> float:
+        lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+        if not lines:
+            return 1.0
+        noisy = 0
+        for line in lines:
+            lower = line.lower()
+            if "www." in lower or ".com" in lower or "bzfxw" in lower:
+                noisy += 1
+                continue
+            if self._readable_ratio(line) < 0.45:
+                noisy += 1
+                continue
+            compact = re.sub(r"\s+", "", line)
+            if compact and self._cjk_ratio(compact) < 0.05 and len(compact) <= 48:
+                noisy += 1
+        return noisy / max(1, len(lines))
+
+    def _page_char_count(self, page: Any) -> int:
+        return len(re.sub(r"\s+", "", self._page_text(page)))
+
+    def _readable_ratio(self, text: str) -> float:
+        sample = str(text or "").strip()
+        if not sample:
+            return 0.0
+        keep = 0
+        for ch in sample:
+            if ch.isalnum() or "\u4e00" <= ch <= "\u9fff":
+                keep += 1
+                continue
+            if ch in "，。！？；：、（）()[]【】《》“”‘’+-*/%=._:;,\"' \n\t|":
+                keep += 1
+        return keep / max(1, len(sample))
+
+    def _default_ocr_base_url(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "https://api.siliconflow.cn/v1"
+        return "https://api.openai.com/v1"
+
+    def _default_ocr_model(self, provider: str) -> str:
+        if provider == "siliconflow":
+            return "deepseek-ai/DeepSeek-OCR"
+        return "gpt-4o-mini"
+
+    def _resolve_ocr_runtime(self, runtime_config: dict[str, Any] | None = None) -> dict[str, str]:
+        runtime = runtime_config or {}
+        provider = str(runtime.get("ocr_provider") or os.getenv("OCR_PROVIDER", "")).strip().lower()
+        default_base = self._default_ocr_base_url(provider)
+        default_model = self._default_ocr_model(provider)
+        return {
+            "provider": provider,
+            "api_key": self._normalize_token(
+                str(
+                    runtime.get("ocr_api_key")
+                    or os.getenv("OCR_API_KEY")
+                    or os.getenv("OPENAI_API_KEY")
+                    or ""
+                )
+            ),
+            "base_url": str(runtime.get("ocr_base_url") or os.getenv("OCR_BASE_URL") or os.getenv("OPENAI_BASE_URL", default_base))
+            .strip()
+            .rstrip("/"),
+            "model": str(runtime.get("ocr_model") or os.getenv("OCR_MODEL") or default_model).strip(),
+        }
+
+    def _ocr_enabled(self, runtime_config: dict[str, Any] | None = None) -> bool:
+        cfg = self._resolve_ocr_runtime(runtime_config=runtime_config)
+        return cfg["provider"] in {"openai", "siliconflow"} and bool(cfg["api_key"] and cfg["base_url"] and cfg["model"])
+
+    def _page_needs_ocr(self, page: Any) -> bool:
+        text = self._page_text(page)
+        min_chars = max(1, int(os.getenv("OCR_MIN_PAGE_TEXT_LEN", "48")))
+        min_ratio = max(0.0, float(os.getenv("OCR_MIN_PAGE_READABLE_RATIO", "0.55")))
+        max_noise_ratio = min(1.0, max(0.0, float(os.getenv("OCR_MAX_PAGE_NOISE_LINE_RATIO", "0.4"))))
+        min_cjk_ratio = min(1.0, max(0.0, float(os.getenv("OCR_MIN_PAGE_CJK_RATIO", "0.02"))))
+        compact = re.sub(r"\s+", "", text)
+        if len(compact) < min_chars:
+            return True
+        if self._readable_ratio(text) < min_ratio:
+            return True
+        if self._noise_line_ratio(text) >= max_noise_ratio:
+            return True
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", compact))
+        if not has_cjk and self._cjk_ratio(compact) < min_cjk_ratio and len(compact) <= 160:
+            return True
+        return False
+
+    def _should_force_full_doc_ocr(self, pages: list[Any], repair_page_numbers: list[int]) -> bool:
+        if not pages or not repair_page_numbers:
+            return False
+        min_bad_pages = max(1, int(os.getenv("OCR_FORCE_FULL_DOC_MIN_BAD_PAGES", "24")))
+        min_bad_ratio = min(1.0, max(0.0, float(os.getenv("OCR_FORCE_FULL_DOC_BAD_PAGE_RATIO", "0.3"))))
+        avg_chars = sum(self._page_char_count(page) for page in pages) / max(1, len(pages))
+        max_avg_chars = max(1.0, float(os.getenv("OCR_FORCE_FULL_DOC_MAX_AVG_PAGE_CHARS", "180")))
+        bad_ratio = len(repair_page_numbers) / max(1, len(pages))
+        if len(repair_page_numbers) >= min_bad_pages:
+            return True
+        if bad_ratio >= min_bad_ratio:
+            return True
+        return avg_chars <= max_avg_chars and bad_ratio >= max(min_bad_ratio / 2.0, 0.12)
+
+    def _ocr_prompt(self, page_no: int) -> str:
+        return (
+            "你是电力工程规范文档 OCR 引擎。请逐字提取这一页的正文内容，"
+            "尽量保留标题层级、条文编号、序号、表格行和单位数值。"
+            "只输出页面内容本身，使用纯文本或简单 Markdown；不要解释，不要补充页面外信息。"
+            f"当前页码：{page_no}。"
+        )
+
+    def _extract_message_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or item.get("content") or "").strip()
+                if text:
+                    parts.append(text)
+            return "\n".join(x for x in parts if x).strip()
+        if isinstance(content, dict):
+            return str(content.get("text") or content.get("content") or "").strip()
+        return ""
+
+    def _render_pdf_page_images(self, pdf_bytes: bytes, page_numbers: list[int]) -> dict[int, bytes]:
+        try:
+            import fitz  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("PyMuPDF is required for OCR page rendering") from exc
+
+        scale = max(1.0, float(os.getenv("OCR_RENDER_SCALE", "2.5")))
+        rendered: dict[int, bytes] = {}
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            page_count = int(getattr(doc, "page_count", 0) or 0)
+            for page_no in sorted({int(p) for p in page_numbers if int(p) > 0}):
+                if page_no > page_count:
+                    continue
+                page = doc.load_page(page_no - 1)
+                pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                rendered[page_no] = pix.tobytes("png")
+        return rendered
+
+    def _request_ocr_page(self, image_bytes: bytes, cfg: dict[str, str], page_no: int) -> str:
+        data_url = f"data:image/png;base64,{base64.b64encode(image_bytes).decode('ascii')}"
+        resp = requests.post(
+            f"{cfg['base_url']}/chat/completions",
+            headers={"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"},
+            json={
+                "model": cfg["model"],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": self._ocr_prompt(page_no=page_no)},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ],
+                    }
+                ],
+                "temperature": 0,
+                "max_tokens": int(os.getenv("OCR_MAX_TOKENS", "4096")),
+            },
+            timeout=float(os.getenv("OCR_HTTP_TIMEOUT_S", "60")),
+        )
+        self._raise_for_status_with_body(resp)
+        body = resp.json()
+        content = (((body.get("choices") or [{}])[0]).get("message") or {}).get("content")
+        return self._extract_message_text(content)
+
+    def _title_like(self, line: str) -> bool:
+        text = str(line or "").strip()
+        if not text or len(text) > 80:
+            return False
+        return bool(
+            re.match(r"^(第[一二三四五六七八九十百千万0-9]+[章节篇部分卷])", text)
+            or re.match(r"^[0-9]+(?:\.[0-9]+){0,3}\s+", text)
+            or re.match(r"^[一二三四五六七八九十]+、", text)
+        )
+
+    def _blocks_and_tables_from_ocr_text(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        lines = [line.rstrip() for line in str(text or "").splitlines()]
+        blocks: list[dict[str, Any]] = []
+        tables: list[dict[str, Any]] = []
+        para_lines: list[str] = []
+        table_lines: list[str] = []
+
+        def flush_para() -> None:
+            if not para_lines:
+                return
+            content = " ".join(x.strip() for x in para_lines if x.strip()).strip()
+            para_lines.clear()
+            if content:
+                blocks.append({"type": "paragraph", "text": content})
+
+        def flush_table() -> None:
+            if not table_lines:
+                return
+            raw = "\n".join(x.strip() for x in table_lines if x.strip()).strip()
+            table_lines.clear()
+            if raw:
+                tables.append({"raw_text": raw})
+                blocks.append({"type": "paragraph", "text": raw})
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                flush_para()
+                flush_table()
+                continue
+            is_table_line = line.count("|") >= 2 or "\t" in line
+            if is_table_line:
+                flush_para()
+                table_lines.append(line)
+                continue
+            flush_table()
+            if self._title_like(line):
+                flush_para()
+                blocks.append({"type": "title", "text": line})
+                continue
+            para_lines.append(line)
+
+        flush_para()
+        flush_table()
+
+        if not blocks and text.strip():
+            blocks = [{"type": "paragraph", "text": text.strip()}]
+        return blocks, tables
+
+    def _parse_pdf_with_ocr(
+        self,
+        pdf_bytes: bytes,
+        runtime_config: dict[str, Any] | None = None,
+        page_numbers: list[int] | None = None,
+    ) -> dict[str, Any]:
+        cfg = self._resolve_ocr_runtime(runtime_config=runtime_config)
+        if cfg["provider"] not in {"openai", "siliconflow"} or not cfg["api_key"]:
+            raise RuntimeError("ocr runtime is not configured")
+
+        render_pages = page_numbers or []
+        if not render_pages:
+            try:
+                from pypdf import PdfReader  # type: ignore
+
+                reader = PdfReader(io.BytesIO(pdf_bytes))
+                render_pages = list(range(1, len(getattr(reader, "pages", []) or []) + 1))
+            except Exception:  # noqa: BLE001
+                render_pages = [1]
+
+        rendered = self._render_pdf_page_images(pdf_bytes=pdf_bytes, page_numbers=render_pages)
+        max_workers_raw = str(os.getenv("OCR_PAGE_CONCURRENCY", "3")).strip()
+        try:
+            max_workers = int(max_workers_raw)
+        except Exception:  # noqa: BLE001
+            max_workers = 3
+        max_workers = max(1, min(max_workers, len(render_pages)))
+        page_texts: dict[int, str] = {}
+
+        def _ocr_one(page_no: int) -> tuple[int, str] | None:
+            image_bytes = rendered.get(int(page_no))
+            if not image_bytes:
+                return None
+            text = self._request_ocr_page(image_bytes=image_bytes, cfg=cfg, page_no=int(page_no))
+            return int(page_no), text
+
+        if max_workers == 1:
+            for page_no in render_pages:
+                try:
+                    result = _ocr_one(int(page_no))
+                except Exception:
+                    continue
+                if result is None:
+                    continue
+                done_page_no, text = result
+                page_texts[done_page_no] = text
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_ocr_one, int(page_no)) for page_no in render_pages]
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                    except Exception:
+                        continue
+                    if result is None:
+                        continue
+                    done_page_no, text = result
+                    page_texts[done_page_no] = text
+
+        pages: list[dict[str, Any]] = []
+        for page_no in render_pages:
+            text = page_texts.get(int(page_no))
+            if not text:
+                continue
+            blocks, tables = self._blocks_and_tables_from_ocr_text(text)
+            pages.append({"page_no": int(page_no), "blocks": blocks, "tables": tables, "images": []})
+        if not pages:
+            raise RuntimeError("ocr returned no pages")
+        return {"pages": pages}
+
+    def _apply_ocr_repair(
+        self,
+        pdf_bytes: bytes,
+        parsed: dict[str, Any],
+        runtime_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        pages = parsed.get("pages")
+        if not isinstance(pages, list) or not pages:
+            return parsed
+
+        max_repair_pages = max(1, int(os.getenv("OCR_MAX_REPAIR_PAGES_PER_DOC", "48")))
+        repair_page_numbers: list[int] = []
+        for idx, page in enumerate(pages, start=1):
+            page_no = int((page or {}).get("page_no") or idx) if isinstance(page, dict) else idx
+            if not self._page_needs_ocr(page):
+                continue
+            repair_page_numbers.append(page_no)
+
+        if not repair_page_numbers:
+            return parsed
+
+        if self._should_force_full_doc_ocr(pages=pages, repair_page_numbers=repair_page_numbers):
+            repaired = self._parse_pdf_with_ocr(
+                pdf_bytes=pdf_bytes,
+                runtime_config=runtime_config,
+                page_numbers=None,
+            )
+            repaired_pages = {
+                int(page.get("page_no") or 0): page
+                for page in repaired.get("pages") or []
+                if isinstance(page, dict)
+            }
+            merged_pages: list[dict[str, Any]] = []
+            for idx, page in enumerate(pages, start=1):
+                page_no = int((page or {}).get("page_no") or idx) if isinstance(page, dict) else idx
+                merged_pages.append(repaired_pages.get(page_no) or page)
+            return {**parsed, "pages": merged_pages}
+
+        if len(repair_page_numbers) > max_repair_pages:
+            repair_page_numbers = repair_page_numbers[:max_repair_pages]
+
+        repaired = self._parse_pdf_with_ocr(
+            pdf_bytes=pdf_bytes,
+            runtime_config=runtime_config,
+            page_numbers=repair_page_numbers,
+        )
+        repaired_pages = {
+            int(page.get("page_no") or 0): page
+            for page in repaired.get("pages") or []
+            if isinstance(page, dict)
+        }
+        merged_pages: list[dict[str, Any]] = []
+        for idx, page in enumerate(pages, start=1):
+            page_no = int((page or {}).get("page_no") or idx) if isinstance(page, dict) else idx
+            merged_pages.append(repaired_pages.get(page_no) or page)
+        return {**parsed, "pages": merged_pages}
 
     def _parse_pdf_locally(self, pdf_bytes: bytes) -> dict[str, Any] | None:
         """Fallback parser when MinerU endpoint is not configured.
@@ -535,7 +918,22 @@ class MinerUClient:
 
         local_parsed = self._parse_pdf_locally(pdf_bytes)
         if local_parsed is not None:
+            if self._ocr_enabled(runtime_config=runtime_config):
+                try:
+                    return self._apply_ocr_repair(
+                        pdf_bytes=pdf_bytes,
+                        parsed=local_parsed,
+                        runtime_config=runtime_config,
+                    )
+                except Exception:
+                    return local_parsed
             return local_parsed
+
+        if self._ocr_enabled(runtime_config=runtime_config):
+            try:
+                return self._parse_pdf_with_ocr(pdf_bytes=pdf_bytes, runtime_config=runtime_config)
+            except Exception:
+                pass
 
         text = pdf_bytes.decode("utf-8", errors="ignore").strip()
         if not text:

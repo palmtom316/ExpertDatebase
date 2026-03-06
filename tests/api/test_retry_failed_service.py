@@ -36,6 +36,7 @@ class TestRetryFailedService(unittest.TestCase):
                     "version_no": 1,
                     "storage_key": "pdf/doc_1/ver_1/a.pdf",
                     "status": "failed",
+                    "notes": {"runtime_config": {"embedding_api_key": "emb-secret"}},
                 },
                 {
                     "id": "ver_2",
@@ -43,6 +44,7 @@ class TestRetryFailedService(unittest.TestCase):
                     "version_no": 1,
                     "storage_key": "pdf/doc_2/ver_2/b.pdf",
                     "status": "processed",
+                    "notes": {"job": {"runtime_config": {"mineru_api_key": "token-secret"}}},
                 },
             ],
         }
@@ -64,6 +66,7 @@ class TestRetryFailedService(unittest.TestCase):
             data = json.loads(path.read_text(encoding="utf-8"))
             v1 = next(x for x in data["versions"] if x["id"] == "ver_1")
             self.assertEqual(v1["status"], "retry_queued")
+            self.assertEqual(v1["notes"]["previous_notes"]["runtime_config"]["embedding_api_key"], "***")
 
     def test_cleanup_failed_versions_archives_failed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,6 +79,7 @@ class TestRetryFailedService(unittest.TestCase):
             data = json.loads(path.read_text(encoding="utf-8"))
             v1 = next(x for x in data["versions"] if x["id"] == "ver_1")
             self.assertEqual(v1["status"], "failed_archived")
+            self.assertEqual(v1["notes"]["previous_notes"]["runtime_config"]["embedding_api_key"], "***")
 
     def test_reprocess_version_requeues_processed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -99,6 +103,7 @@ class TestRetryFailedService(unittest.TestCase):
             data = json.loads(path.read_text(encoding="utf-8"))
             v2 = next(x for x in data["versions"] if x["id"] == "ver_2")
             self.assertEqual(v2["status"], "retry_queued")
+            self.assertEqual(v2["notes"]["previous_notes"]["job"]["runtime_config"]["mineru_api_key"], "***")
 
     def test_reprocess_version_returns_not_found(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
