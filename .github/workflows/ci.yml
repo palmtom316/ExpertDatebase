@@ -60,11 +60,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install \
-            fastapi uvicorn sqlalchemy pydantic pyyaml alembic requests \
-            redis minio psycopg2-binary python-multipart slowapi structlog \
-            qdrant-client asyncpg \
-            pytest pytest-asyncio httpx
+          pip install -e .[dev]
+          pip install qdrant-client asyncpg
 
       - name: Run DB migrations
         run: |
