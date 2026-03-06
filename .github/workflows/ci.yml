@@ -40,8 +40,6 @@ jobs:
       AUTH_ENABLED: "false"
       AUTH_TOKENS_JSON: '{"test-token":"system_admin"}'
       MINIO_SECRET_KEY: testminiosecret
-      LLM_PROVIDER: stub
-      EMBEDDING_PROVIDER: stub
       OBJECT_STORAGE_BACKEND: memory
       DOC_REGISTRY_BACKEND: memory
       TASK_QUEUE_BACKEND: memory
