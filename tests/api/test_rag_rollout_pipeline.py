@@ -82,13 +82,15 @@ def test_hybrid_search_uses_multiroute_fusion(monkeypatch: pytest.MonkeyPatch) -
 
     docs = {str((c or {}).get("doc_name") or "") for c in out["citations"]}
     assert "dense.pdf" in docs
-    # Sparse/structured/graphrag candidates may not have doc_name but should carry source route.
     routes = {str((c or {}).get("route") or "") for c in out["citations"]}
-    assert "sparse" in routes
+    assert "sparse" not in routes
     assert "structured" in routes
-    assert "graphrag" in routes
+    assert "graphrag" not in routes
     assert "debug" in out
     assert out["debug"]["route_counts"]["dense"] >= 1
+    assert out["debug"]["route_plan"]["precision_query"] is True
+    assert out["debug"]["route_plan"]["enable_sparse"] is False
+    assert out["debug"]["route_plan"]["enable_graphrag"] is False
 
 
 def test_hybrid_search_rolls_back_when_sparse_fails(monkeypatch: pytest.MonkeyPatch) -> None:
